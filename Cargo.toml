@@ -5,3 +5,7 @@ authors = ["Colin Walters <walters@verbum.org>"]
 edition = "2018"
 
 [dependencies]
+openat = "0.1.15"
+
+[dev-dependencies]
+tempfile = "3.0.3"
