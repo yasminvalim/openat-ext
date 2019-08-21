@@ -3,6 +3,11 @@ name = "openat-ext"
 version = "0.1.0"
 authors = ["Colin Walters <walters@verbum.org>"]
 edition = "2018"
+license = "MIT/Apache-2.0"
+readme = "README.md"
+keywords = ["open", "openat", "filesystem", "fs"]
+categories = ["filesystem", "api-bindings"]
+homepage = "http://github.com/cgwalters/openat-ext"
 
 [dependencies]
 openat = "0.1.15"
