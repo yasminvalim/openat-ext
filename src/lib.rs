@@ -20,7 +20,7 @@ use openat;
 use std::{fs, io};
 
 /// Helper functions for openat::Dir
-pub(crate) trait OpenatDirExt {
+pub trait OpenatDirExt {
     // IMO should propose this at least in a "utils" bit of the openat crate;
     // Like 95% of the time I'm looking at errno (with files) it's for ENOENT,
     // and Rust has an elegant way to map that with Option<>.  Every other
