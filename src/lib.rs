@@ -19,6 +19,9 @@ pub trait OpenatDirExt {
     /// of course.
     fn open_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<Option<fs::File>>;
 
+    /// Like `open_file_optional()` except opens a directory via `openat::dir::sub_dir`.
+    fn sub_dir_optional<P: openat::AsPath>(&self, p: P) -> io::Result<Option<openat::Dir>>;
+
     /// On modern filesystems the directory entry contains the type; if available,
     /// return it.  Otherwise invoke `stat()`.
     fn get_file_type(&self, e: &openat::Entry) -> io::Result<openat::SimpleType>;
@@ -28,6 +31,19 @@ impl OpenatDirExt for openat::Dir {
     fn open_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<Option<fs::File>> {
         match self.open_file(p) {
             Ok(f) => Ok(Some(f)),
+            Err(e) => {
+                if e.kind() == io::ErrorKind::NotFound {
+                    Ok(None)
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    fn sub_dir_optional<P: openat::AsPath>(&self, p: P) -> io::Result<Option<openat::Dir>> {
+        match self.sub_dir(p) {
+            Ok(d) => Ok(Some(d)),
             Err(e) => {
                 if e.kind() == io::ErrorKind::NotFound {
                     Ok(None)
