@@ -8,6 +8,7 @@
 //! thin wrappers for the underlying system call.  This crate offers
 //! a number of common higher level convenience functions.
 
+use libc;
 use openat;
 use std::{fs, io};
 
@@ -25,6 +26,13 @@ pub trait OpenatDirExt {
     /// On modern filesystems the directory entry contains the type; if available,
     /// return it.  Otherwise invoke `stat()`.
     fn get_file_type(&self, e: &openat::Entry) -> io::Result<openat::SimpleType>;
+
+    /// Returns true iff file exists (may be a directory or symlink).  Symbolic links
+    /// are not followed.
+    fn exists<P: openat::AsPath>(&self, p: P) -> io::Result<bool>;
+
+    /// Create a directory but don't error if it already exists.
+    fn ensure_dir<P: openat::AsPath>(&self, p: P, mode: libc::mode_t) -> io::Result<()>;
 }
 
 impl OpenatDirExt for openat::Dir {
@@ -59,6 +67,32 @@ impl OpenatDirExt for openat::Dir {
             Ok(ftype)
         } else {
             Ok(self.metadata(e.file_name())?.simple_type())
+        }
+    }
+
+    fn exists<P: openat::AsPath>(&self, p: P) -> io::Result<bool> {
+        match self.metadata(p) {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                if e.kind() == io::ErrorKind::NotFound {
+                    Ok(false)
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    fn ensure_dir<P: openat::AsPath>(&self, p: P, mode: libc::mode_t) -> io::Result<()> {
+        match self.create_dir(p, mode) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if e.kind() == io::ErrorKind::AlreadyExists {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }
         }
     }
 }

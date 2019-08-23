@@ -15,6 +15,7 @@ documentation = "http://docs.rs/openat-ext"
 
 [dependencies]
 openat = "0.1.15"
+libc = "0.2.34"
 
 [dev-dependencies]
 tempfile = "3.0.3"
