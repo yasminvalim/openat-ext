@@ -104,7 +104,7 @@ mod tests {
     use std::{error, result};
     use tempfile;
 
-    type Result<T> = result::Result<T, Box<error::Error>>;
+    type Result<T> = result::Result<T, Box<dyn error::Error>>;
 
     #[test]
     fn open_file_optional() -> Result<()> {
