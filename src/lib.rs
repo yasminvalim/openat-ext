@@ -97,7 +97,6 @@ impl OpenatDirExt for openat::Dir {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
