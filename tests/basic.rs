@@ -1,7 +1,7 @@
 use openat;
 use openat_ext::*;
-use std::{error, result};
 use std::fs::File;
+use std::{error, result};
 use tempfile;
 
 type Result<T> = result::Result<T, Box<dyn error::Error>>;
@@ -53,8 +53,9 @@ fn copy() -> Result<()> {
     let contents = "somefilecontents";
     std::fs::write(&src_p, contents)?;
     let mut src = File::open(&src_p)?;
-    { let mut dest = File::create(&dest_p)?;
-      src.copy_to(&mut dest)?;
+    {
+        let mut dest = File::create(&dest_p)?;
+        src.copy_to(&mut dest)?;
     }
     let testf_contents = std::fs::read_to_string(&dest_p)?;
     assert_eq!(contents, testf_contents.as_str());

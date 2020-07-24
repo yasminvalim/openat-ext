@@ -18,8 +18,8 @@ impl FileExt for File {
     // Derived from src/libstd/sys/unix/fs.rs in Rust
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn copy_to(&mut self, to: &mut File) -> io::Result<u64> {
-        use nix::fcntl::copy_file_range;
         use nix::errno::Errno;
+        use nix::fcntl::copy_file_range;
         use std::os::unix::io::AsRawFd;
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -69,7 +69,7 @@ impl FileExt for File {
                             return io::copy(self, to);
                         }
                         Some(os_err) => return Err(io::Error::from_raw_os_error(os_err as i32)),
-                        _ => return Err(io::Error::new(io::ErrorKind::Other, err))
+                        _ => return Err(io::Error::new(io::ErrorKind::Other, err)),
                     }
                 }
             }
