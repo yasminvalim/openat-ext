@@ -1,16 +1,23 @@
-//! # Extension methods for openat::Dir
+//! # Extension methods for openat::Dir and std::fs::File
 //!
 //! ```
-//! use openat_ext::*;
+//! use openat_ext::OpenatDirExt;
 //! ```
 //!
 //! The `openat` crate is a low-level API, generally just exposing
 //! thin wrappers for the underlying system call.  This crate offers
 //! a number of common higher level convenience functions.
+//!
+//! More recently, there is also an `FileExt` available; it currently
+//! just contains an optimized file copy method that will hopefully
+//! go into the standard library.
 
 use libc;
 use openat;
 use std::{fs, io};
+
+mod copyfile;
+pub use copyfile::FileExt;
 
 /// Helper functions for openat::Dir
 pub trait OpenatDirExt {
