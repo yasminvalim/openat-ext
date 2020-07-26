@@ -52,10 +52,10 @@ fn copy() -> Result<()> {
     let dest_p = td.path().join("testfiledest");
     let contents = "somefilecontents";
     std::fs::write(&src_p, contents)?;
-    let mut src = File::open(&src_p)?;
+    let src = File::open(&src_p)?;
     {
-        let mut dest = File::create(&dest_p)?;
-        src.copy_to(&mut dest)?;
+        let dest = File::create(&dest_p)?;
+        src.copy_to(&dest)?;
     }
     let testf_contents = std::fs::read_to_string(&dest_p)?;
     assert_eq!(contents, testf_contents.as_str());
