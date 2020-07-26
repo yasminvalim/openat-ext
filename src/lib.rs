@@ -17,7 +17,7 @@ use openat;
 use std::{fs, io};
 
 mod copyfile;
-pub use copyfile::FileExt;
+pub use copyfile::*;
 
 /// Helper functions for openat::Dir
 pub trait OpenatDirExt {
