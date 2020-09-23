@@ -200,6 +200,7 @@ impl FileExt for File {
 mod tests {
     use super::*;
     use std::{error, result};
+    use std::path::{Path, PathBuf};
     use tempfile;
 
     type Result<T> = result::Result<T, Box<dyn error::Error>>;
@@ -228,11 +229,23 @@ mod tests {
         Ok(())
     }
 
+    fn find_test_file(tempdir: &Path) -> Result<PathBuf> {
+        for p in ["/proc/self/exe", "/usr/bin/bash"].iter() {
+            let p = Path::new(p);
+            if p.exists() {
+                return Ok(p.into());
+            }
+        }
+        let fallback = tempdir.join("testfile-fallback");
+        std::fs::write(&fallback, "some test data")?;
+        Ok(fallback)
+    }
+
     #[test]
     fn copy_fallback() -> Result<()> {
         use std::io::Read;
         let td = tempfile::tempdir()?;
-        let src_p = "/usr/bin/bash";
+        let src_p = find_test_file(td.path())?;
         let dest_p = td.path().join("bash");
         {
             let src = File::open(&src_p)?;
