@@ -15,8 +15,11 @@
 use libc;
 use nix;
 use openat;
+use std::ffi::OsStr;
 use std::fs::File;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::prelude::FileExt as UnixFileExt;
+use std::path::Path;
 use std::{fs, io};
 
 /// Helper functions for openat::Dir
@@ -43,6 +46,9 @@ pub trait OpenatDirExt {
 
     /// Create a directory but don't error if it already exists.
     fn ensure_dir<P: openat::AsPath>(&self, p: P, mode: libc::mode_t) -> io::Result<()>;
+
+    /// Create directory and all parents as necessary; no error is returned if directory already exists.
+    fn ensure_dir_all<P: openat::AsPath>(&self, p: P, mode: libc::mode_t) -> io::Result<()>;
 }
 
 impl OpenatDirExt for openat::Dir {
@@ -118,6 +124,40 @@ impl OpenatDirExt for openat::Dir {
             }
         }
     }
+
+    fn ensure_dir_all<P: openat::AsPath>(&self, p: P, mode: libc::mode_t) -> io::Result<()> {
+        let p = p
+            .to_path()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nul byte in file name"))?;
+        let p = p.as_ref();
+        // Convert to a `Path` basically just so that we can call `.parent()` on it.
+        let p = Path::new(OsStr::from_bytes(p.to_bytes()));
+        // Our first system call here is a direct `mkdirat()` - if that succeeds or
+        // we get EEXIST then we're done.
+        match self.create_dir(p, mode) {
+            Ok(_) => {}
+            Err(e) => match e.kind() {
+                io::ErrorKind::AlreadyExists => {}
+                // Otherwise, the expensive path
+                io::ErrorKind::NotFound => impl_ensure_dir_all(self, p, mode)?,
+                _ => return Err(e),
+            },
+        }
+        Ok(())
+    }
+}
+
+/// Walk up the path components, creating each directory in turn.  This is
+/// pessimistic, assuming no components exist.  But we already handled the
+/// optimal case where all components exist above.
+pub(crate) fn impl_ensure_dir_all(d: &openat::Dir, p: &Path, mode: libc::mode_t) -> io::Result<()> {
+    if let Some(parent) = p.parent() {
+        if parent.as_os_str().len() > 0 {
+            impl_ensure_dir_all(d, parent, mode)?;
+        }
+    }
+    d.ensure_dir(p, mode)?;
+    Ok(())
 }
 
 // Our methods take &self, not &mut self matching the other raw
@@ -215,8 +255,8 @@ impl FileExt for File {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{error, result};
     use std::path::{Path, PathBuf};
+    use std::{error, result};
     use tempfile;
 
     type Result<T> = result::Result<T, Box<dyn error::Error>>;
@@ -252,6 +292,22 @@ mod tests {
             let t = d.get_file_type(&x)?;
             assert_eq!(openat::SimpleType::File, t);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn ensure_dir_all() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let d = openat::Dir::open(td.path())?;
+        let mode = 0o755;
+        let p = Path::new("foo/bar/baz");
+        d.ensure_dir_all(p, mode)?;
+        assert_eq!(d.metadata(p)?.stat().st_mode & !libc::S_IFMT, mode);
+        d.ensure_dir_all(p, mode)?;
+        d.ensure_dir_all("foo/bar", mode)?;
+        d.ensure_dir_all("foo", mode)?;
+        d.ensure_dir_all("bar", 0o700)?;
+        assert_eq!(d.metadata("bar")?.stat().st_mode & !libc::S_IFMT, 0o700);
         Ok(())
     }
 
