@@ -30,6 +30,9 @@ pub trait OpenatDirExt {
     /// of course.
     fn open_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<Option<fs::File>>;
 
+    /// Remove a file from the given directory.
+    fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<()>;
+
     /// Like `open_file_optional()` except opens a directory via `openat::dir::sub_dir`.
     fn sub_dir_optional<P: openat::AsPath>(&self, p: P) -> io::Result<Option<openat::Dir>>;
 
@@ -58,6 +61,19 @@ impl OpenatDirExt for openat::Dir {
             Err(e) => {
                 if e.kind() == io::ErrorKind::NotFound {
                     Ok(None)
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<()> {
+        match self.remove_file(p) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if e.kind() == io::ErrorKind::NotFound {
+                    Ok(())
                 } else {
                     Err(e)
                 }
@@ -268,6 +284,17 @@ mod tests {
         assert!(d.open_file_optional("foo")?.is_none());
         d.write_file("foo", 0o644)?.sync_all()?;
         assert!(d.open_file_optional("foo")?.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn remove_file_optional() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let d = openat::Dir::open(td.path())?;
+        d.write_file("foo", 0o644)?.sync_all()?;
+        assert!(d.open_file_optional("foo")?.is_some());
+        d.remove_file_optional("foo")?;
+        assert!(d.open_file_optional("foo")?.is_none());
         Ok(())
     }
 
