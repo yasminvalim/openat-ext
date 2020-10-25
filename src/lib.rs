@@ -15,11 +15,13 @@
 use libc;
 use nix;
 use openat;
+use rand::Rng;
 use std::ffi::OsStr;
 use std::fs::File;
+use std::io::prelude::*;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::prelude::FileExt as UnixFileExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 /// Helper functions for openat::Dir
@@ -52,6 +54,78 @@ pub trait OpenatDirExt {
 
     /// Create directory and all parents as necessary; no error is returned if directory already exists.
     fn ensure_dir_all<P: openat::AsPath>(&self, p: P, mode: libc::mode_t) -> io::Result<()>;
+
+    /// Create a `FileWriter` which provides a `std::io::BufWriter` and then atomically creates
+    /// the file at the destination, renaming it over an existing one if necessary.
+    fn new_file_writer<'a, P: AsRef<Path>>(
+        &'a self,
+        destname: P,
+        mode: libc::mode_t,
+    ) -> io::Result<FileWriter>;
+
+    /// Atomically create or replace the destination file, calling the provided
+    /// function to generate the contents.  Note that the contents of the
+    /// file will not be explicitly sync'd to disk; if you want to do so you
+    /// need to invoke `writer.flush()?; writer.get_ref().sync_all()` for example.
+    fn write_file_with<P: AsRef<Path>, F, T, E>(
+        &self,
+        destname: P,
+        mode: libc::mode_t,
+        f: F,
+    ) -> Result<T, E>
+    where
+        F: Fn(&mut std::io::BufWriter<std::fs::File>) -> Result<T, E>,
+        E: From<io::Error>,
+    {
+        let mut w = self.new_file_writer(destname, mode)?;
+        match f(&mut w.writer) {
+            Ok(v) => {
+                w.complete()?;
+                Ok(v)
+            }
+            Err(e) => {
+                w.abandon();
+                Err(e)
+            }
+        }
+    }
+
+    /// Like `write_file_with()` but explicitly synchronizes the target to disk.
+    fn write_file_with_sync<P: AsRef<Path>, F, T, E>(
+        &self,
+        destname: P,
+        mode: libc::mode_t,
+        f: F,
+    ) -> Result<T, E>
+    where
+        F: Fn(&mut std::io::BufWriter<std::fs::File>) -> Result<T, E>,
+        E: From<io::Error>,
+    {
+        let mut w = self.new_file_writer(destname, mode)?;
+        match f(&mut w.writer) {
+            Ok(v) => {
+                w.complete_with(|f| {
+                    f.sync_all()
+                })?;
+                Ok(v)
+            }
+            Err(e) => {
+                w.abandon();
+                Err(e)
+            }
+        }
+    }
+
+    /// Atomically create or replace the destination file with
+    /// the provided contents.
+    fn write_file_contents<P: AsRef<Path>, C: AsRef<[u8]>>(
+        &self,
+        destname: P,
+        mode: libc::mode_t,
+        contents: C,
+    ) -> io::Result<()> {
+        self.write_file_with(destname, mode, |w| w.write_all(contents.as_ref()))
+    }
 }
 
 impl OpenatDirExt for openat::Dir {
@@ -161,6 +235,16 @@ impl OpenatDirExt for openat::Dir {
         }
         Ok(())
     }
+
+    fn new_file_writer<'a, P: AsRef<Path>>(
+        &'a self,
+        destname: P,
+        mode: libc::mode_t,
+    ) -> io::Result<FileWriter> {
+        let tmpf = self.new_unnamed_file(mode)?;
+        let destname = destname.as_ref();
+        Ok(FileWriter::new(self, tmpf, destname.to_path_buf()))
+    }
 }
 
 /// Walk up the path components, creating each directory in turn.  This is
@@ -174,6 +258,106 @@ pub(crate) fn impl_ensure_dir_all(d: &openat::Dir, p: &Path, mode: libc::mode_t)
     }
     d.ensure_dir(p, mode)?;
     Ok(())
+}
+
+/// A wrapper for atomically replacing a file.  The primary field
+/// to access here is the `writer`.  You can also configure the
+/// temporary prefix and suffix used for the temporary file before
+/// it is moved over the final destination.
+///
+/// To ensure that errors are handled correctly, you must explicitly
+/// invoke either `complete()` or `abandon()`.  Letting this value
+/// drop without invoking either of those will panic (unless the
+/// thread is already panicing, in which case this requirement is skipped).
+pub struct FileWriter<'a> {
+    /// Write to the destination file.
+    pub writer: std::io::BufWriter<std::fs::File>,
+    /// This string will be used as a prefix for the temporary file
+    pub tmp_prefix: String,
+    /// This string will be used as a suffix for the temporary file
+    pub tmp_suffix: String,
+
+    /// The target file name
+    destname: PathBuf,
+    /// The target directory
+    dir: &'a openat::Dir,
+    /// Used to ensure that either complete() or abandon() are invoked
+    bomb: drop_bomb::DropBomb,
+}
+
+impl<'a> FileWriter<'a> {
+    fn new(dir: &'a openat::Dir, f: std::fs::File, destname: PathBuf) -> Self {
+        Self {
+            writer: std::io::BufWriter::new(f),
+            destname,
+            tmp_prefix: ".tmp.".to_string(),
+            tmp_suffix: ".tmp".to_string(),
+            dir,
+            bomb: drop_bomb::DropBomb::new(
+                "FileWriter must be explicitly completed/abandoned to ensure errors are checked",
+            ),
+        }
+    }
+
+    /// Flush any outstanding buffered data and rename the temporary
+    /// file into place.  The provided closure will be invoked
+    /// on the real underlying file descriptor before it is
+    /// renamed into place.  You can use this to change file attributes.
+    /// For example, you can change the mode, extended attributes, or invoke
+    /// `fchmod()` to change ownership, etc.
+    pub fn complete_with<F>(mut self, f: F) -> io::Result<()>
+    where
+        F: Fn(&fs::File) -> io::Result<()>,
+    {
+        self.bomb.defuse();
+        let fd = self.writer.into_inner()?;
+        f(&fd)?;
+        let mut rng = rand::thread_rng();
+        // Unfortunately there's no linkat(LINKAT_REPLACE) yet, so we need
+        // to generate a tempfile as the penultimate step.
+        let tmpname = loop {
+            let mut tmpname = self.tmp_prefix.clone();
+            for _ in 0..8 {
+                tmpname.push(rng.sample(rand::distributions::Alphanumeric))
+            }
+            tmpname.push_str(self.tmp_suffix.as_str());
+            match self.dir.link_file_at(&fd, tmpname.as_str()) {
+                Ok(()) => {
+                    break tmpname;
+                }
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::AlreadyExists {
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        };
+        let tmpname = tmpname.as_str();
+        // Then rename it into place.
+        match self.dir.local_rename(tmpname, &self.destname) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // If we failed, clean up
+                let _ = self.dir.remove_file(tmpname);
+                Err(e)
+            }
+        }
+    }
+
+    /// Flush any outstanding buffered data and rename the temporary
+    /// file into place.
+    pub fn complete(self) -> io::Result<()> {
+        self.complete_with(|_f| Ok(()))
+    }
+
+    /// Drop any buffered data and delete the temporary file without
+    /// affecting the final destination.
+    pub fn abandon(mut self) {
+        self.bomb.defuse()
+        // Ideally BufWriter would have an `abandon()` too
+    }
 }
 
 // Our methods take &self, not &mut self matching the other raw
