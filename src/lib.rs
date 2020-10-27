@@ -17,6 +17,8 @@
 // We're just a wrapper around openat, shouldn't have any unsafe here.
 #![forbid(unsafe_code)]
 
+const TEMPFILE_ATTEMPTS: u32 = 100;
+
 use libc;
 use nix;
 use openat;
@@ -244,10 +246,48 @@ impl OpenatDirExt for openat::Dir {
         destname: P,
         mode: libc::mode_t,
     ) -> io::Result<FileWriter> {
-        let tmpf = self.new_unnamed_file(mode)?;
+        let (tmpf, name) = if let Some(tmpf) = self.new_unnamed_file(mode).ok() {
+            (tmpf, None)
+        } else {
+            // FIXME allow this to be configurable
+            let (tmpf, name) = tempfile_in(self, ".tmp", ".tmp", mode)?;
+            (tmpf, Some(name))
+        };
         let destname = destname.as_ref();
-        Ok(FileWriter::new(self, tmpf, destname.to_path_buf()))
+        Ok(FileWriter::new(self, tmpf, name, destname.to_path_buf()))
     }
+}
+
+pub(crate) fn random_name(rng: &mut rand::rngs::ThreadRng, prefix: &str, suffix: &str) -> String {
+    let mut tmpname = prefix.to_string();
+    for _ in 0..8 {
+        tmpname.push(rng.sample(rand::distributions::Alphanumeric));
+    }
+    tmpname.push_str(suffix);
+    tmpname
+}
+
+pub(crate) fn tempfile_in(
+    d: &openat::Dir,
+    prefix: &str,
+    suffix: &str,
+    mode: libc::mode_t,
+) -> io::Result<(fs::File, String)> {
+    for _ in 0..TEMPFILE_ATTEMPTS {
+        let tmpname = random_name(&mut rand::thread_rng(), prefix, suffix);
+        match d.new_file(tmpname.as_str(), mode) {
+            Ok(f) => return Ok((f, tmpname)),
+            Err(ref e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => Err(e)?,
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!(
+            "Exhausted {} attempts to create temporary file",
+            TEMPFILE_ATTEMPTS
+        ),
+    ))
 }
 
 /// Walk up the path components, creating each directory in turn.  This is
@@ -284,14 +324,22 @@ pub struct FileWriter<'a> {
     destname: PathBuf,
     /// The target directory
     dir: &'a openat::Dir,
+    /// Our temporary file name
+    tempname: Option<String>,
     /// Used to ensure that either complete() or abandon() are invoked
     bomb: drop_bomb::DropBomb,
 }
 
 impl<'a> FileWriter<'a> {
-    fn new(dir: &'a openat::Dir, f: std::fs::File, destname: PathBuf) -> Self {
+    fn new(
+        dir: &'a openat::Dir,
+        f: std::fs::File,
+        tempname: Option<String>,
+        destname: PathBuf,
+    ) -> Self {
         Self {
             writer: std::io::BufWriter::new(f),
+            tempname,
             destname,
             tmp_prefix: ".tmp.".to_string(),
             tmp_suffix: ".tmp".to_string(),
@@ -300,6 +348,39 @@ impl<'a> FileWriter<'a> {
                 "FileWriter must be explicitly completed/abandoned to ensure errors are checked",
             ),
         }
+    }
+
+    fn linkat(
+        dir: &openat::Dir,
+        fd: fs::File,
+        rng: &mut rand::rngs::ThreadRng,
+        prefix: &str,
+        suffix: &str,
+    ) -> io::Result<String> {
+        // Unfortunately there's no linkat(LINKAT_REPLACE) yet, so we need
+        // to generate a tempfile as the penultimate step.
+        for _ in 0..TEMPFILE_ATTEMPTS {
+            let tmpname = random_name(rng, prefix, suffix);
+            match dir.link_file_at(&fd, tmpname.as_str()) {
+                Ok(()) => {
+                    return Ok(tmpname);
+                }
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::AlreadyExists {
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "Exhausted {} attempts to create temporary file",
+                TEMPFILE_ATTEMPTS
+            ),
+        ))
     }
 
     /// Flush any outstanding buffered data and rename the temporary
@@ -313,29 +394,18 @@ impl<'a> FileWriter<'a> {
         F: Fn(&fs::File) -> io::Result<()>,
     {
         self.bomb.defuse();
+        let dir = self.dir;
+        let prefix = self.tmp_prefix;
+        let suffix = self.tmp_suffix;
         let fd = self.writer.into_inner()?;
         f(&fd)?;
         let mut rng = rand::thread_rng();
-        // Unfortunately there's no linkat(LINKAT_REPLACE) yet, so we need
-        // to generate a tempfile as the penultimate step.
-        let tmpname = loop {
-            let mut tmpname = self.tmp_prefix.clone();
-            for _ in 0..8 {
-                tmpname.push(rng.sample(rand::distributions::Alphanumeric))
-            }
-            tmpname.push_str(self.tmp_suffix.as_str());
-            match self.dir.link_file_at(&fd, tmpname.as_str()) {
-                Ok(()) => {
-                    break tmpname;
-                }
-                Err(e) => {
-                    if e.kind() == io::ErrorKind::AlreadyExists {
-                        continue;
-                    } else {
-                        return Err(e);
-                    }
-                }
-            }
+        // If we already have a temporary file name (no O_TMPFILE) then
+        // use it.  Otherwise since we're done writing, try to link it into place.
+        let tmpname = if let Some(t) = self.tempname {
+            t
+        } else {
+            Self::linkat(&dir, fd, &mut rng, prefix.as_str(), suffix.as_str())?
         };
         let tmpname = tmpname.as_str();
         // Then rename it into place.
@@ -358,7 +428,11 @@ impl<'a> FileWriter<'a> {
     /// Drop any buffered data and delete the temporary file without
     /// affecting the final destination.
     pub fn abandon(mut self) {
-        self.bomb.defuse()
+        self.bomb.defuse();
+        if let Some(tmpname) = self.tempname {
+            // We ignore errors here; it was a temporary file anyways.
+            let _ = self.dir.remove_file_optional(tmpname);
+        }
         // Ideally BufWriter would have an `abandon()` too
     }
 }
