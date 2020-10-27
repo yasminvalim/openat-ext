@@ -1,6 +1,7 @@
 use openat;
 use openat_ext::*;
 use std::fs::File;
+use std::io::prelude::*;
 use std::{error, result};
 use tempfile;
 
@@ -59,5 +60,104 @@ fn copy() -> Result<()> {
     }
     let testf_contents = std::fs::read_to_string(&dest_p)?;
     assert_eq!(contents, testf_contents.as_str());
+    Ok(())
+}
+
+#[test]
+fn write_file_with() -> Result<()> {
+    let td = tempfile::tempdir()?;
+    let d = openat::Dir::open(td.path())?;
+    let testname = "testfile";
+    let testcontents = "hello world";
+    d.write_file_with("testfile", 0o644, |w| -> std::io::Result<()> {
+        w.write_all(testcontents.as_bytes())
+    })?;
+    let actual_contents = std::fs::read_to_string(td.path().join(testname))?;
+    assert_eq!(testcontents, actual_contents.as_str());
+    let testcontents2 = "updated world";
+    d.write_file_with("testfile", 0o644, |w| -> anyhow::Result<()> {
+        w.write_all(testcontents2.as_bytes())?;
+        Ok(())
+    })?;
+    let actual_contents = std::fs::read_to_string(td.path().join(testname))?;
+    assert_eq!(testcontents2, actual_contents.as_str());
+    Ok(())
+}
+
+#[test]
+fn write_file_with_complex() -> Result<()> {
+    let td = tempfile::tempdir()?;
+    let d = openat::Dir::open(td.path())?;
+    let testname = "testfile";
+    let testcontents = "hello world";
+    d.write_file_with("testfile", 0o644, |w| -> std::io::Result<()> {
+        w.write_all(testcontents.as_bytes())
+    })?;
+    let actual_contents = std::fs::read_to_string(td.path().join(testname))?;
+    assert_eq!(testcontents, actual_contents.as_str());
+    Ok(())
+}
+
+#[test]
+fn write_file_contents() -> Result<()> {
+    let td = tempfile::tempdir()?;
+    let d = openat::Dir::open(td.path())?;
+    let testname = "testfile";
+    let testcontents = "hello world";
+    d.write_file_contents("testfile", 0o644, testcontents)?;
+    let actual_contents = std::fs::read_to_string(td.path().join(testname))?;
+    assert_eq!(testcontents, actual_contents.as_str());
+    Ok(())
+}
+
+#[test]
+fn file_writer() -> Result<()> {
+    let td = tempfile::tempdir()?;
+    let d = openat::Dir::open(td.path())?;
+    let testname = "testfile";
+    let testcontents = "hello world";
+    let mut fw = d.new_file_writer(testname, 0o644)?;
+    fw.writer.write_all(testcontents.as_bytes())?;
+    fw.complete()?;
+    let actual_contents = std::fs::read_to_string(td.path().join(testname))?;
+    assert_eq!(testcontents, actual_contents.as_str());
+    Ok(())
+}
+
+#[test]
+fn file_writer_abandon() -> Result<()> {
+    let td = tempfile::tempdir()?;
+    let d = openat::Dir::open(td.path())?;
+    let testname = "testfile";
+    let testcontents = "hello world";
+    {
+        let mut fw = d.new_file_writer(testname, 0o644)?;
+        fw.writer.write_all(testcontents.as_bytes())?;
+        fw.abandon();
+    }
+    assert!(d.open_file_optional(testname)?.is_none());
+    Ok(())
+}
+
+#[test]
+fn file_writer_panic() -> Result<()> {
+    let td = tempfile::tempdir()?;
+    let d = openat::Dir::open(td.path())?;
+    let result = std::panic::catch_unwind(move || -> std::io::Result<()> {
+        let _fw = d
+            .new_file_writer("sometestfile", 0o644)
+            .expect("new writer");
+        Ok(())
+    });
+    match result {
+        Ok(_) => panic!("expected panic from FileWriter"),
+        Err(e) => {
+            if let Some(s) = e.downcast_ref::<String>() {
+                assert!(s.contains("FileWriter must be explicitly"));
+            } else {
+                panic!("Unexpected panic")
+            }
+        }
+    }
     Ok(())
 }
