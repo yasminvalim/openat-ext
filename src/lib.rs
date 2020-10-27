@@ -12,6 +12,11 @@
 //! just contains an optimized file copy method that will hopefully
 //! go into the standard library.
 
+#![deny(unused_results)]
+#![deny(missing_docs)]
+// We're just a wrapper around openat, shouldn't have any unsafe here.
+#![forbid(unsafe_code)]
+
 use libc;
 use nix;
 use openat;
@@ -104,9 +109,7 @@ pub trait OpenatDirExt {
         let mut w = self.new_file_writer(destname, mode)?;
         match f(&mut w.writer) {
             Ok(v) => {
-                w.complete_with(|f| {
-                    f.sync_all()
-                })?;
+                w.complete_with(|f| f.sync_all())?;
                 Ok(v)
             }
             Err(e) => {
@@ -543,14 +546,14 @@ mod tests {
         {
             let src = File::open(&src_p)?;
             let dest = File::create(&dest_p)?;
-            fallback_file_copy(&src, &dest)?;
+            let _ = fallback_file_copy(&src, &dest)?;
         }
         let mut src = File::open(&src_p)?;
         let mut srcbuf = Vec::new();
-        src.read_to_end(&mut srcbuf)?;
+        let _ = src.read_to_end(&mut srcbuf)?;
         let mut destbuf = Vec::new();
         let mut dest = File::open(&dest_p)?;
-        dest.read_to_end(&mut destbuf)?;
+        let _ = dest.read_to_end(&mut destbuf)?;
         assert_eq!(srcbuf.len(), destbuf.len());
         assert_eq!(&srcbuf, &destbuf);
         Ok(())
