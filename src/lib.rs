@@ -109,9 +109,7 @@ pub trait OpenatDirExt {
         let mut w = self.new_file_writer(destname, mode)?;
         match f(&mut w.writer) {
             Ok(v) => {
-                w.complete_with(|f| {
-                    f.sync_all()
-                })?;
+                w.complete_with(|f| f.sync_all())?;
                 Ok(v)
             }
             Err(e) => {
