@@ -1,3 +1,4 @@
+use anyhow::Context;
 use openat;
 use openat_ext::*;
 use std::fs::File;
@@ -159,5 +160,43 @@ fn file_writer_panic() -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+#[test]
+fn rmrf() -> anyhow::Result<()> {
+    use std::fs::create_dir_all;
+    use std::fs::write as fswrite;
+    use std::os::unix::fs::symlink;
+
+    let tempdir = tempfile::tempdir()?;
+    let d = openat::Dir::open(tempdir.path())?;
+
+    let td = tempdir.path().join("t");
+    for d in &["foo/bar/baz", "foo/bar/blah", "blah/moo", "somedir"] {
+        let p = td.join(d);
+        create_dir_all(&p)?;
+        symlink("/", p.join("somelink"))?;
+        symlink("somelink", p.join("otherlink"))?;
+    }
+    for f in &["somefile", "otherfile"] {
+        fswrite(td.join("foo/bar").join(f), f)?;
+        fswrite(td.join("blah").join(f), f)?;
+        fswrite(td.join("blah/moo").join(f), f)?;
+    }
+    assert!(d.remove_all("t").context("removing t")?);
+    assert!(!d.exists("t")?);
+
+    assert!(!d.remove_all("nosuchfile").context("removing nosuchfile")?);
+    let l = tempdir.path().join("somelink");
+    let regf = tempdir.path().join("regfile");
+    fswrite(&regf, "some file contents")?;
+    symlink("regfile", &l)?;
+    assert!(d.remove_all("somelink")?);
+    assert!(!d.remove_all("somelink")?);
+    assert!(d.exists("regfile")?);
+    assert!(d.remove_all("regfile")?);
+    assert!(!d.exists("regfile")?);
+
     Ok(())
 }
