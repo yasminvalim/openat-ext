@@ -39,8 +39,13 @@ pub trait OpenatDirExt {
     /// of course.
     fn open_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<Option<fs::File>>;
 
-    /// Remove a file from the given directory.
+    /// Remove a file from the given directory; does not error if the target does
+    /// not exist.  But will return an error if the target is a directory.
     fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<()>;
+
+    /// Remove an empty sub-directory from the given directory; does not error if the target does
+    /// not exist.  But will return an error if the target is a file or symlink.
+    fn remove_dir_optional<P: openat::AsPath>(&self, p: P) -> io::Result<bool>;
 
     /// Like `open_file_optional()` except opens a directory via `openat::dir::sub_dir`.
     fn sub_dir_optional<P: openat::AsPath>(&self, p: P) -> io::Result<Option<openat::Dir>>;
@@ -153,6 +158,19 @@ impl OpenatDirExt for openat::Dir {
     fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<()> {
         let _ = impl_remove_file_optional(self, p)?;
         Ok(())
+    }
+
+    fn remove_dir_optional<P: openat::AsPath>(&self, p: P) -> io::Result<bool> {
+        match self.remove_dir(p) {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                if e.kind() == io::ErrorKind::NotFound {
+                    Ok(false)
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     fn metadata_optional<P: openat::AsPath>(&self, p: P) -> io::Result<Option<openat::Metadata>> {
@@ -320,7 +338,7 @@ pub(crate) fn remove_children(d: &openat::Dir, iter: openat::DirIter) -> io::Res
             openat::SimpleType::Dir => {
                 let subd = d.sub_dir(&entry)?;
                 remove_children(&subd, subd.list_dir(".")?)?;
-                d.remove_dir(&entry)?;
+                let _ = d.remove_dir_optional(&entry)?;
             }
             _ => {
                 d.remove_file_optional(entry.file_name())?;
