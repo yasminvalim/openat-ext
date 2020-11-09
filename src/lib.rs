@@ -62,6 +62,9 @@ pub trait OpenatDirExt {
     /// Create directory and all parents as necessary; no error is returned if directory already exists.
     fn ensure_dir_all<P: openat::AsPath>(&self, p: P, mode: libc::mode_t) -> io::Result<()>;
 
+    /// Remove all content at the target path, returns `true` if something existed there.
+    fn remove_all<P: openat::AsPath>(&self, p: P) -> io::Result<bool>;
+
     /// Create a `FileWriter` which provides a `std::io::BufWriter` and then atomically creates
     /// the file at the destination, renaming it over an existing one if necessary.
     fn new_file_writer<'a, P: AsRef<Path>>(
@@ -148,16 +151,8 @@ impl OpenatDirExt for openat::Dir {
     }
 
     fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<()> {
-        match self.remove_file(p) {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                if e.kind() == io::ErrorKind::NotFound {
-                    Ok(())
-                } else {
-                    Err(e)
-                }
-            }
-        }
+        let _ = impl_remove_file_optional(self, p)?;
+        Ok(())
     }
 
     fn metadata_optional<P: openat::AsPath>(&self, p: P) -> io::Result<Option<openat::Metadata>> {
@@ -221,9 +216,7 @@ impl OpenatDirExt for openat::Dir {
     }
 
     fn ensure_dir_all<P: openat::AsPath>(&self, p: P, mode: libc::mode_t) -> io::Result<()> {
-        let p = p
-            .to_path()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nul byte in file name"))?;
+        let p = to_cstr(p)?;
         let p = p.as_ref();
         // Convert to a `Path` basically just so that we can call `.parent()` on it.
         let p = Path::new(OsStr::from_bytes(p.to_bytes()));
@@ -241,6 +234,10 @@ impl OpenatDirExt for openat::Dir {
         Ok(())
     }
 
+    fn remove_all<P: openat::AsPath>(&self, p: P) -> io::Result<bool> {
+        impl_remove_all(self, p)
+    }
+
     fn new_file_writer<'a, P: AsRef<Path>>(
         &'a self,
         destname: P,
@@ -255,6 +252,19 @@ impl OpenatDirExt for openat::Dir {
         };
         let destname = destname.as_ref();
         Ok(FileWriter::new(self, tmpf, name, destname.to_path_buf()))
+    }
+}
+
+fn impl_remove_file_optional<P: openat::AsPath>(d: &openat::Dir, path: P) -> io::Result<bool> {
+    match d.remove_file(path) {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            if e.kind() == io::ErrorKind::NotFound {
+                Ok(false)
+            } else {
+                Err(e)
+            }
+        }
     }
 }
 
@@ -301,6 +311,47 @@ pub(crate) fn impl_ensure_dir_all(d: &openat::Dir, p: &Path, mode: libc::mode_t)
     }
     d.ensure_dir(p, mode)?;
     Ok(())
+}
+
+pub(crate) fn remove_children(d: &openat::Dir, iter: openat::DirIter) -> io::Result<()> {
+    for entry in iter {
+        let entry = entry?;
+        match d.get_file_type(&entry)? {
+            openat::SimpleType::Dir => {
+                let subd = d.sub_dir(&entry)?;
+                remove_children(&subd, subd.list_dir(".")?)?;
+                d.remove_dir(&entry)?;
+            }
+            _ => {
+                d.remove_file_optional(entry.file_name())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn impl_remove_all<P: openat::AsPath>(d: &openat::Dir, p: P) -> io::Result<bool> {
+    let cp = to_cstr(p)?;
+    let cp = cp.as_ref();
+    match d.list_dir(cp) {
+        Ok(iter) => {
+            let subd = d.sub_dir(cp)?;
+            remove_children(&subd, iter)?;
+            d.remove_dir(cp)?;
+            Ok(true)
+        }
+        Err(e) => {
+            if let Some(ecode) = e.raw_os_error() {
+                match ecode {
+                    libc::ENOENT => Ok(false),
+                    libc::ELOOP | libc::ENOTDIR => impl_remove_file_optional(d, cp),
+                    _ => Err(e),
+                }
+            } else {
+                unreachable!("Unexpected non-OS error from openat::sub_dir: {}", e)
+            }
+        }
+    }
 }
 
 /// A wrapper for atomically replacing a file.  The primary field
@@ -527,6 +578,11 @@ impl FileExt for File {
         }
         Ok(written)
     }
+}
+
+fn to_cstr<P: openat::AsPath>(path: P) -> io::Result<P::Buffer> {
+    path.to_path()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nul byte in file name"))
 }
 
 #[cfg(test)]
