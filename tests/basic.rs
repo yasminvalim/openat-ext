@@ -31,7 +31,10 @@ fn dir_tests() -> Result<()> {
     assert_eq!(0, bar.list_dir(".")?.count());
 
     assert!(!d.exists("baz")?);
+    assert!(!d.remove_dir_optional("baz")?);
     d.ensure_dir("baz", 0o755)?;
+    assert!(d.remove_dir_optional("baz")?);
+    assert!(!d.exists("baz")?);
 
     Ok(())
 }
