@@ -351,18 +351,19 @@ pub(crate) fn remove_children(d: &openat::Dir, iter: openat::DirIter) -> io::Res
 fn impl_remove_all<P: openat::AsPath>(d: &openat::Dir, p: P) -> io::Result<bool> {
     let cp = to_cstr(p)?;
     let cp = cp.as_ref();
-    match d.list_dir(cp) {
-        Ok(iter) => {
-            let subd = d.sub_dir(cp)?;
-            remove_children(&subd, iter)?;
-            d.remove_dir(cp)?;
-            Ok(true)
-        }
+    match impl_remove_file_optional(d, cp) {
+        Ok(b) => Ok(b),
         Err(e) => {
             if let Some(ecode) = e.raw_os_error() {
                 match ecode {
                     libc::ENOENT => Ok(false),
-                    libc::ELOOP | libc::ENOTDIR => impl_remove_file_optional(d, cp),
+                    libc::EISDIR => {
+                        let iter = d.list_dir(cp)?;
+                        let subd = d.sub_dir(cp)?;
+                        remove_children(&subd, iter)?;
+                        d.remove_dir(cp)?;
+                        Ok(true)
+                    },
                     _ => Err(e),
                 }
             } else {
