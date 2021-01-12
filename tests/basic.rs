@@ -181,6 +181,10 @@ fn rmrf() -> anyhow::Result<()> {
         create_dir_all(&p)?;
         symlink("/", p.join("somelink"))?;
         symlink("somelink", p.join("otherlink"))?;
+        symlink(".", p.join("link2self"))?;
+        let linkeddir = p.join("linkdirtarget");
+        create_dir_all(&linkeddir)?;
+        symlink(&linkeddir, p.join("link2dir"))?;
     }
     for f in &["somefile", "otherfile"] {
         fswrite(td.join("foo/bar").join(f), f)?;
