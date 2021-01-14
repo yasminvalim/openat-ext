@@ -207,3 +207,50 @@ fn rmrf() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+fn assert_file_contents<P: AsRef<std::path::Path>>(
+    d: &openat::Dir,
+    p: P,
+    contents: &str,
+) -> Result<()> {
+    let mut buf = String::new();
+    let _ = d.open_file(p.as_ref())?.read_to_string(&mut buf)?;
+    assert_eq!(buf, contents);
+    Ok(())
+}
+
+#[test]
+fn copy_path() -> Result<()> {
+    let td = tempfile::tempdir()?;
+    let td = &openat::Dir::open(td.path())?;
+
+    // Copy plain src to dest in same dir
+    td.write_file_contents("srcf", 0o644, "src contents")?;
+    td.copy_file("srcf", "destf").context("copy1")?;
+    assert_file_contents(td, "destf", "src contents")?;
+
+    // Overwrite
+    td.write_file_contents("srcf", 0o644, "src contents v2")?;
+    td.copy_file("srcf", "destf").context("copy overwrite")?;
+    assert_file_contents(td, "destf", "src contents v2")?;
+
+    // Copy across subdirectories
+    td.ensure_dir_all("sub1.1/sub2", 0o755)?;
+    td.ensure_dir_all("sub1.2/sub2", 0o755)?;
+    td.write_file_contents("sub1.1/sub2/blah", 0o600, "somesecretvalue")?;
+    let subtarget = "sub1.2/sub2/blahcopy";
+    td.copy_file("sub1.1/sub2/blah", subtarget)
+        .context("copy2")?;
+    assert_file_contents(td, subtarget, "somesecretvalue")?;
+    assert_eq!(td.metadata(subtarget)?.stat().st_mode & 0o777, 0o600);
+
+    // We don't follow links by default
+    td.symlink("somelink", "srcf")?;
+    assert!(td.copy_file("somelink", "srcf-from-link").is_err());
+    // Nonexistent file
+    assert!(td.copy_file("enoent", "nosuchdest").is_err());
+    // Directory
+    assert!(td.copy_file("sub1.1", "nosuchdest").is_err());
+
+    Ok(())
+}
