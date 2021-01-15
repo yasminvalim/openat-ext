@@ -27,6 +27,8 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::prelude::*;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::prelude::FileExt as UnixFileExt;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
@@ -69,6 +71,13 @@ pub trait OpenatDirExt {
 
     /// Remove all content at the target path, returns `true` if something existed there.
     fn remove_all<P: openat::AsPath>(&self, p: P) -> io::Result<bool>;
+
+    /// Copy a regular file.  The semantics here are intended to match `std::fs::copy()`.
+    /// If the target exists, it will be overwritten.  The mode bits (permissions) will match, but
+    /// owner/group will be derived from the current process.  Extended attributes are not
+    /// copied.  However, symbolic links will not be followed; instead an error is returned.
+    /// If the filesystem supports it, reflinks will be used.
+    fn copy_file<S: openat::AsPath, D: openat::AsPath>(&self, s: S, d: D) -> io::Result<()>;
 
     /// Create a `FileWriter` which provides a `std::io::BufWriter` and then atomically creates
     /// the file at the destination, renaming it over an existing one if necessary.
@@ -252,6 +261,11 @@ impl OpenatDirExt for openat::Dir {
         Ok(())
     }
 
+    fn copy_file<S: openat::AsPath, D: openat::AsPath>(&self, s: S, d: D) -> io::Result<()> {
+        let src = self.open_file(s)?;
+        impl_copy_regfile(self, &src, d)
+    }
+
     fn remove_all<P: openat::AsPath>(&self, p: P) -> io::Result<bool> {
         impl_remove_all(self, p)
     }
@@ -270,6 +284,44 @@ impl OpenatDirExt for openat::Dir {
         };
         let destname = destname.as_ref();
         Ok(FileWriter::new(self, tmpf, name, destname.to_path_buf()))
+    }
+}
+
+fn map_nix_error(e: nix::Error) -> io::Error {
+    match e.as_errno() {
+        Some(os_err) => io::Error::from_raw_os_error(os_err as i32),
+        _ => io::Error::new(io::ErrorKind::Other, e),
+    }
+}
+
+fn copy_regfile_inner(
+    src: &File,
+    srcmeta: &std::fs::Metadata,
+    dest: &mut FileWriter,
+) -> io::Result<()> {
+    // Go directly to the raw file so we can reflink
+    let destf = dest.writer.get_mut();
+    let _ = src.copy_to(destf)?;
+    let nixmode = nix::sys::stat::Mode::from_bits_truncate(srcmeta.permissions().mode());
+    nix::sys::stat::fchmod(destf.as_raw_fd(), nixmode).map_err(map_nix_error)?;
+    Ok(())
+}
+
+fn impl_copy_regfile<D: openat::AsPath>(dir: &openat::Dir, src: &File, d: D) -> io::Result<()> {
+    let d = to_cstr(d)?;
+    let d = OsStr::from_bytes(d.as_ref().to_bytes());
+    let meta = src.metadata()?;
+    // Start in mode 0600, we will replace with the actual bits after writing
+    let mut w = dir.new_file_writer(d, 0o600)?;
+    match copy_regfile_inner(src, &meta, &mut w) {
+        Ok(v) => {
+            w.complete()?;
+            Ok(v)
+        }
+        Err(e) => {
+            w.abandon();
+            Err(e)
+        }
     }
 }
 
@@ -363,7 +415,7 @@ fn impl_remove_all<P: openat::AsPath>(d: &openat::Dir, p: P) -> io::Result<bool>
                         remove_children(&subd, iter)?;
                         d.remove_dir(cp)?;
                         Ok(true)
-                    },
+                    }
                     _ => Err(e),
                 }
             } else {
@@ -541,7 +593,6 @@ impl FileExt for File {
     fn copy_to(&self, to: &File) -> io::Result<u64> {
         use nix::errno::Errno;
         use nix::fcntl::copy_file_range;
-        use std::os::unix::io::AsRawFd;
         use std::sync::atomic::{AtomicBool, Ordering};
 
         // Kernel prior to 4.5 don't have copy_file_range
