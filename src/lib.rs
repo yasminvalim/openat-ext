@@ -79,6 +79,17 @@ pub trait OpenatDirExt {
     /// If the filesystem supports it, reflinks will be used.
     fn copy_file<S: openat::AsPath, D: openat::AsPath>(&self, s: S, d: D) -> io::Result<()>;
 
+    /// Copy a regular file.
+    ///
+    /// This is the same as `copy_file`, but can copy to an arbitrary target directory outside
+    /// of self.
+    fn copy_file_at<S: openat::AsPath, D: openat::AsPath>(
+        &self,
+        s: S,
+        target_dir: &openat::Dir,
+        d: D,
+    ) -> io::Result<()>;
+
     /// Create a `FileWriter` which provides a `std::io::BufWriter` and then atomically creates
     /// the file at the destination, renaming it over an existing one if necessary.
     fn new_file_writer<'a, P: AsRef<Path>>(
@@ -263,7 +274,17 @@ impl OpenatDirExt for openat::Dir {
 
     fn copy_file<S: openat::AsPath, D: openat::AsPath>(&self, s: S, d: D) -> io::Result<()> {
         let src = self.open_file(s)?;
-        impl_copy_regfile(self, &src, d)
+        impl_copy_regfile(&src, self, d)
+    }
+
+    fn copy_file_at<S: openat::AsPath, D: openat::AsPath>(
+        &self,
+        s: S,
+        target_dir: &openat::Dir,
+        d: D,
+    ) -> io::Result<()> {
+        let src = self.open_file(s)?;
+        impl_copy_regfile(&src, target_dir, d)
     }
 
     fn remove_all<P: openat::AsPath>(&self, p: P) -> io::Result<bool> {
@@ -307,12 +328,16 @@ fn copy_regfile_inner(
     Ok(())
 }
 
-fn impl_copy_regfile<D: openat::AsPath>(dir: &openat::Dir, src: &File, d: D) -> io::Result<()> {
+fn impl_copy_regfile<D: openat::AsPath>(
+    src: &File,
+    target_dir: &openat::Dir,
+    d: D,
+) -> io::Result<()> {
     let d = to_cstr(d)?;
     let d = OsStr::from_bytes(d.as_ref().to_bytes());
     let meta = src.metadata()?;
     // Start in mode 0600, we will replace with the actual bits after writing
-    let mut w = dir.new_file_writer(d, 0o600)?;
+    let mut w = target_dir.new_file_writer(d, 0o600)?;
     match copy_regfile_inner(src, &meta, &mut w) {
         Ok(v) => {
             w.complete()?;
@@ -757,5 +782,36 @@ mod tests {
         assert_eq!(srcbuf.len(), destbuf.len());
         assert_eq!(&srcbuf, &destbuf);
         Ok(())
+    }
+
+    #[test]
+    fn copy_file_at() {
+        let src_td = tempfile::tempdir().unwrap();
+        let src_dir = openat::Dir::open(src_td.path()).unwrap();
+        src_dir
+            .write_file_contents("foo", 0o644, "test content")
+            .unwrap();
+
+        let dst_td = tempfile::tempdir().unwrap();
+        let dst_dir = openat::Dir::open(dst_td.path()).unwrap();
+
+        assert_eq!(dst_dir.exists("bar").unwrap(), false);
+        src_dir.copy_file_at("foo", &dst_dir, "bar").unwrap();
+        assert_eq!(dst_dir.exists("bar").unwrap(), true);
+
+        let srcbuf = {
+            let mut src = src_dir.open_file("foo").unwrap();
+            let mut srcbuf = Vec::new();
+            let _ = src.read_to_end(&mut srcbuf).unwrap();
+            srcbuf
+        };
+        let destbuf = {
+            let mut destbuf = Vec::new();
+            let mut dest = dst_dir.open_file("bar").unwrap();
+            let _ = dest.read_to_end(&mut destbuf).unwrap();
+            destbuf
+        };
+        assert_eq!(&srcbuf, b"test content");
+        assert_eq!(&srcbuf, &destbuf);
     }
 }
