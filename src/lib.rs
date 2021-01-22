@@ -41,6 +41,12 @@ pub trait OpenatDirExt {
     /// of course.
     fn open_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<Option<fs::File>>;
 
+    /// Like `std::fs::read_to_string()` but with a path relative to the openat::Dir.
+    fn read_to_string<P: openat::AsPath>(&self, p: P) -> io::Result<String>;
+
+    /// Like `read_to_string`, but returns `Ok(None)` for nonexistent paths.
+    fn read_to_string_optional<P: openat::AsPath>(&self, p: P) -> io::Result<Option<String>>;
+
     /// Remove a file from the given directory; does not error if the target does
     /// not exist.  But will return an error if the target is a directory.
     fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<()>;
@@ -175,6 +181,18 @@ impl OpenatDirExt for openat::Dir {
         }
     }
 
+    fn read_to_string<P: openat::AsPath>(&self, p: P) -> io::Result<String> {
+        impl_read_to_string(self.open_file(p)?)
+    }
+
+    fn read_to_string_optional<P: openat::AsPath>(&self, p: P) -> io::Result<Option<String>> {
+        if let Some(f) = self.open_file_optional(p)? {
+            Ok(Some(impl_read_to_string(f)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<()> {
         let _ = impl_remove_file_optional(self, p)?;
         Ok(())
@@ -306,6 +324,12 @@ impl OpenatDirExt for openat::Dir {
         let destname = destname.as_ref();
         Ok(FileWriter::new(self, tmpf, name, destname.to_path_buf()))
     }
+}
+
+fn impl_read_to_string(mut f: File) -> io::Result<String> {
+    let mut buf = String::new();
+    let _ = f.read_to_string(&mut buf)?;
+    Ok(buf)
 }
 
 fn map_nix_error(e: nix::Error) -> io::Error {
@@ -696,6 +720,27 @@ mod tests {
         assert!(d.open_file_optional("foo")?.is_none());
         d.write_file("foo", 0o644)?.sync_all()?;
         assert!(d.open_file_optional("foo")?.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn read_to_string() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let d = openat::Dir::open(td.path())?;
+        assert!(d.read_to_string("foo").is_err());
+        d.write_file_contents("foo", 0o644, "bar")?;
+        assert_eq!(d.read_to_string("foo")?, "bar");
+        Ok(())
+    }
+
+    #[test]
+    fn read_to_string_optional() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let d = openat::Dir::open(td.path())?;
+        assert!(d.read_to_string_optional("foo")?.is_none());
+        d.write_file_contents("foo", 0o644, "bar")?;
+        assert!(d.read_to_string_optional("foo")?.is_some());
+        assert_eq!(d.read_to_string_optional("foo")?.unwrap(), "bar");
         Ok(())
     }
 
