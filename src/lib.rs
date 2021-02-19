@@ -115,7 +115,7 @@ pub trait OpenatDirExt {
         f: F,
     ) -> Result<T, E>
     where
-        F: Fn(&mut std::io::BufWriter<std::fs::File>) -> Result<T, E>,
+        F: FnOnce(&mut std::io::BufWriter<std::fs::File>) -> Result<T, E>,
         E: From<io::Error>,
     {
         let mut w = self.new_file_writer(destname, mode)?;
