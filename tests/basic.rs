@@ -85,6 +85,14 @@ fn write_file_with() -> Result<()> {
     })?;
     let actual_contents = std::fs::read_to_string(td.path().join(testname))?;
     assert_eq!(testcontents2, actual_contents.as_str());
+    let srcf = d.open_file("testfile")?;
+    d.write_file_with("testfile2", 0o644, |w| -> anyhow::Result<()> {
+        let mut bufr = std::io::BufReader::new(srcf);
+        std::io::copy(&mut bufr, w)?;
+        Ok(())
+    })?;
+    let actual_contents = std::fs::read_to_string(td.path().join("testfile2"))?;
+    assert_eq!(testcontents2, actual_contents.as_str());
     Ok(())
 }
 
