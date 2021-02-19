@@ -3,7 +3,7 @@ name = "openat-ext"
 description = """
     Extension methods for the openat crate
 """
-version = "0.1.12"
+version = "0.1.13-alpha.0"
 authors = ["Colin Walters <walters@verbum.org>"]
 edition = "2018"
 license = "MIT/Apache-2.0"
