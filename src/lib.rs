@@ -112,14 +112,14 @@ pub trait OpenatDirExt {
         &self,
         destname: P,
         mode: libc::mode_t,
-        f: F,
+        gen_content_fn: F,
     ) -> Result<T, E>
     where
         F: FnOnce(&mut std::io::BufWriter<std::fs::File>) -> Result<T, E>,
         E: From<io::Error>,
     {
         let mut w = self.new_file_writer(destname, mode)?;
-        match f(&mut w.writer) {
+        match gen_content_fn(&mut w.writer) {
             Ok(v) => {
                 w.complete()?;
                 Ok(v)
@@ -136,14 +136,14 @@ pub trait OpenatDirExt {
         &self,
         destname: P,
         mode: libc::mode_t,
-        f: F,
+        gen_content_fn: F,
     ) -> Result<T, E>
     where
-        F: Fn(&mut std::io::BufWriter<std::fs::File>) -> Result<T, E>,
+        F: FnOnce(&mut std::io::BufWriter<std::fs::File>) -> Result<T, E>,
         E: From<io::Error>,
     {
         let mut w = self.new_file_writer(destname, mode)?;
-        match f(&mut w.writer) {
+        match gen_content_fn(&mut w.writer) {
             Ok(v) => {
                 w.complete_with(|f| f.sync_all())?;
                 Ok(v)
