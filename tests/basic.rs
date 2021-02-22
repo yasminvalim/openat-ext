@@ -102,11 +102,14 @@ fn write_file_with_complex() -> Result<()> {
     let d = openat::Dir::open(td.path())?;
     let testname = "testfile";
     let testcontents = "hello world";
-    d.write_file_with("testfile", 0o644, |w| -> std::io::Result<()> {
+    let mut written = false;
+    d.write_file_with_sync("testfile", 0o644, |w| -> std::io::Result<()> {
+        written = true;
         w.write_all(testcontents.as_bytes())
     })?;
     let actual_contents = std::fs::read_to_string(td.path().join(testname))?;
     assert_eq!(testcontents, actual_contents.as_str());
+    assert_eq!(written, true);
     Ok(())
 }
 
