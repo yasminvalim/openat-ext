@@ -17,7 +17,7 @@ documentation = "http://docs.rs/openat-ext"
 drop_bomb = "0.1.5"
 openat = "0.1.15"
 libc = "0.2.34"
-nix = "0.18"
+nix = "0.20"
 rand = "0.7.3"
 
 [dev-dependencies]
