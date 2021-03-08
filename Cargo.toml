@@ -10,7 +10,7 @@ license = "MIT/Apache-2.0"
 readme = "README.md"
 keywords = ["open", "openat", "filesystem", "fs"]
 categories = ["filesystem", "api-bindings"]
-homepage = "http://github.com/cgwalters/openat-ext"
+homepage = "http://github.com/coreos/openat-ext"
 documentation = "http://docs.rs/openat-ext"
 
 [dependencies]
