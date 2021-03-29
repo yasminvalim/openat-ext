@@ -148,7 +148,6 @@ fn file_writer_abandon() -> Result<()> {
     {
         let mut fw = d.new_file_writer(0o644)?;
         fw.writer.write_all(testcontents.as_bytes())?;
-        fw.abandon();
     }
     assert!(d.open_file_optional(testname)?.is_none());
     Ok(())

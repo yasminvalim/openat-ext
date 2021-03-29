@@ -115,16 +115,10 @@ pub trait OpenatDirExt {
         E: From<io::Error>,
     {
         let mut w = self.new_file_writer(mode)?;
-        match gen_content_fn(&mut w.writer) {
-            Ok(v) => {
-                w.complete(destname)?;
-                Ok(v)
-            }
-            Err(e) => {
-                w.abandon();
-                Err(e)
-            }
-        }
+        gen_content_fn(&mut w.writer).and_then(|t| {
+            w.complete(destname)?;
+            Ok(t)
+        })
     }
 
     /// Like `write_file_with()` but explicitly synchronizes the target to disk.
@@ -139,16 +133,10 @@ pub trait OpenatDirExt {
         E: From<io::Error>,
     {
         let mut w = self.new_file_writer(mode)?;
-        match gen_content_fn(&mut w.writer) {
-            Ok(v) => {
-                w.complete_with(destname, |f| f.sync_all())?;
-                Ok(v)
-            }
-            Err(e) => {
-                w.abandon();
-                Err(e)
-            }
-        }
+        gen_content_fn(&mut w.writer).and_then(|t| {
+            w.complete_with(destname, |f| f.sync_all())?;
+            Ok(t)
+        })
     }
 
     /// Atomically create or replace the destination file with
@@ -352,16 +340,10 @@ fn impl_copy_regfile<D: openat::AsPath>(
     let meta = src.metadata()?;
     // Start in mode 0600, we will replace with the actual bits after writing
     let mut w = target_dir.new_file_writer(0o600)?;
-    match copy_regfile_inner(src, &meta, &mut w) {
-        Ok(v) => {
-            w.complete(d)?;
-            Ok(v)
-        }
-        Err(e) => {
-            w.abandon();
-            Err(e)
-        }
-    }
+    copy_regfile_inner(src, &meta, &mut w).and_then(|t| {
+        w.complete(d)?;
+        Ok(t)
+    })
 }
 
 fn impl_remove_file_optional<P: openat::AsPath>(d: &openat::Dir, path: P) -> io::Result<bool> {
@@ -469,10 +451,7 @@ fn impl_remove_all<P: openat::AsPath>(d: &openat::Dir, p: P) -> io::Result<bool>
 /// temporary prefix and suffix used for the temporary file before
 /// it is moved over the final destination.
 ///
-/// To ensure that errors are handled correctly, you must explicitly
-/// invoke either `complete()` or `abandon()`.  Letting this value
-/// drop without invoking either of those will panic (unless the
-/// thread is already panicing, in which case this requirement is skipped).
+/// Call `complete()` to `rename()` the file into place.
 pub struct FileWriter<'a> {
     /// Write to the destination file.
     pub writer: std::io::BufWriter<std::fs::File>,
@@ -571,16 +550,6 @@ impl<'a> FileWriter<'a> {
     /// file into place.
     pub fn complete<P: AsRef<Path>>(self, dest: P) -> io::Result<()> {
         self.complete_with(dest, |_f| Ok(()))
-    }
-
-    /// Drop any buffered data and delete the temporary file without
-    /// affecting the final destination.
-    pub fn abandon(self) {
-        if let Some(tmpname) = self.tempname {
-            // We ignore errors here; it was a temporary file anyways.
-            let _ = self.dir.remove_file_optional(tmpname);
-        }
-        // Ideally BufWriter would have an `abandon()` too
     }
 }
 
