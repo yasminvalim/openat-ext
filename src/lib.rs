@@ -49,7 +49,7 @@ pub trait OpenatDirExt {
 
     /// Remove a file from the given directory; does not error if the target does
     /// not exist.  But will return an error if the target is a directory.
-    fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<()>;
+    fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<bool>;
 
     /// Remove an empty sub-directory from the given directory; does not error if the target does
     /// not exist.  But will return an error if the target is a file or symlink.
@@ -193,9 +193,8 @@ impl OpenatDirExt for openat::Dir {
         }
     }
 
-    fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<()> {
-        let _ = impl_remove_file_optional(self, p)?;
-        Ok(())
+    fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<bool> {
+        Ok(impl_remove_file_optional(self, p)?)
     }
 
     fn remove_dir_optional<P: openat::AsPath>(&self, p: P) -> io::Result<bool> {
@@ -442,7 +441,7 @@ pub(crate) fn remove_children(d: &openat::Dir, iter: openat::DirIter) -> io::Res
                 let _ = d.remove_dir_optional(&entry)?;
             }
             _ => {
-                d.remove_file_optional(entry.file_name())?;
+                let _ = d.remove_file_optional(entry.file_name())?;
             }
         }
     }
@@ -743,7 +742,8 @@ mod tests {
         let d = openat::Dir::open(td.path())?;
         d.write_file("foo", 0o644)?.sync_all()?;
         assert!(d.open_file_optional("foo")?.is_some());
-        d.remove_file_optional("foo")?;
+        let removed = d.remove_file_optional("foo")?;
+        assert!(removed);
         assert!(d.open_file_optional("foo")?.is_none());
         Ok(())
     }
