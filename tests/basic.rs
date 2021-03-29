@@ -131,9 +131,9 @@ fn file_writer() -> Result<()> {
     let d = openat::Dir::open(td.path())?;
     let testname = "testfile";
     let testcontents = "hello world";
-    let mut fw = d.new_file_writer(testname, 0o644)?;
+    let mut fw = d.new_file_writer(0o644)?;
     fw.writer.write_all(testcontents.as_bytes())?;
-    fw.complete()?;
+    fw.complete(testname)?;
     let actual_contents = std::fs::read_to_string(td.path().join(testname))?;
     assert_eq!(testcontents, actual_contents.as_str());
     Ok(())
@@ -146,7 +146,7 @@ fn file_writer_abandon() -> Result<()> {
     let testname = "testfile";
     let testcontents = "hello world";
     {
-        let mut fw = d.new_file_writer(testname, 0o644)?;
+        let mut fw = d.new_file_writer(0o644)?;
         fw.writer.write_all(testcontents.as_bytes())?;
         fw.abandon();
     }
