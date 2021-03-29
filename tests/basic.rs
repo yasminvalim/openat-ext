@@ -155,29 +155,6 @@ fn file_writer_abandon() -> Result<()> {
 }
 
 #[test]
-fn file_writer_panic() -> Result<()> {
-    let td = tempfile::tempdir()?;
-    let d = openat::Dir::open(td.path())?;
-    let result = std::panic::catch_unwind(move || -> std::io::Result<()> {
-        let _fw = d
-            .new_file_writer("sometestfile", 0o644)
-            .expect("new writer");
-        Ok(())
-    });
-    match result {
-        Ok(_) => panic!("expected panic from FileWriter"),
-        Err(e) => {
-            if let Some(s) = e.downcast_ref::<String>() {
-                assert!(s.contains("FileWriter must be explicitly"));
-            } else {
-                panic!("Unexpected panic")
-            }
-        }
-    }
-    Ok(())
-}
-
-#[test]
 fn rmrf() -> anyhow::Result<()> {
     use std::fs::create_dir_all;
     use std::fs::write as fswrite;

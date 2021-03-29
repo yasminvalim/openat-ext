@@ -497,8 +497,6 @@ pub struct FileWriter<'a> {
     dir: &'a openat::Dir,
     /// Our temporary file name
     tempname: Option<String>,
-    /// Used to ensure that either complete() or abandon() are invoked
-    bomb: drop_bomb::DropBomb,
 }
 
 impl<'a> FileWriter<'a> {
@@ -515,9 +513,6 @@ impl<'a> FileWriter<'a> {
             tmp_prefix: ".tmp.".to_string(),
             tmp_suffix: ".tmp".to_string(),
             dir,
-            bomb: drop_bomb::DropBomb::new(
-                "FileWriter must be explicitly completed/abandoned to ensure errors are checked",
-            ),
         }
     }
 
@@ -560,11 +555,10 @@ impl<'a> FileWriter<'a> {
     /// renamed into place.  You can use this to change file attributes.
     /// For example, you can change the mode, extended attributes, or invoke
     /// `fchmod()` to change ownership, etc.
-    pub fn complete_with<F>(mut self, f: F) -> io::Result<()>
+    pub fn complete_with<F>(self, f: F) -> io::Result<()>
     where
         F: Fn(&fs::File) -> io::Result<()>,
     {
-        self.bomb.defuse();
         let dir = self.dir;
         let prefix = self.tmp_prefix;
         let suffix = self.tmp_suffix;
@@ -598,8 +592,7 @@ impl<'a> FileWriter<'a> {
 
     /// Drop any buffered data and delete the temporary file without
     /// affecting the final destination.
-    pub fn abandon(mut self) {
-        self.bomb.defuse();
+    pub fn abandon(self) {
         if let Some(tmpname) = self.tempname {
             // We ignore errors here; it was a temporary file anyways.
             let _ = self.dir.remove_file_optional(tmpname);
