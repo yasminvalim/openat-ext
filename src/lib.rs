@@ -30,7 +30,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::prelude::FileExt as UnixFileExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::{fs, io};
 
 /// Helper functions for openat::Dir
@@ -49,7 +49,7 @@ pub trait OpenatDirExt {
 
     /// Remove a file from the given directory; does not error if the target does
     /// not exist.  But will return an error if the target is a directory.
-    fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<()>;
+    fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<bool>;
 
     /// Remove an empty sub-directory from the given directory; does not error if the target does
     /// not exist.  But will return an error if the target is a file or symlink.
@@ -98,11 +98,7 @@ pub trait OpenatDirExt {
 
     /// Create a `FileWriter` which provides a `std::io::BufWriter` and then atomically creates
     /// the file at the destination, renaming it over an existing one if necessary.
-    fn new_file_writer<'a, P: AsRef<Path>>(
-        &'a self,
-        destname: P,
-        mode: libc::mode_t,
-    ) -> io::Result<FileWriter>;
+    fn new_file_writer<'a>(&'a self, mode: libc::mode_t) -> io::Result<FileWriter>;
 
     /// Atomically create or replace the destination file, calling the provided
     /// function to generate the contents.  Note that the contents of the
@@ -118,17 +114,11 @@ pub trait OpenatDirExt {
         F: FnOnce(&mut std::io::BufWriter<std::fs::File>) -> Result<T, E>,
         E: From<io::Error>,
     {
-        let mut w = self.new_file_writer(destname, mode)?;
-        match gen_content_fn(&mut w.writer) {
-            Ok(v) => {
-                w.complete()?;
-                Ok(v)
-            }
-            Err(e) => {
-                w.abandon();
-                Err(e)
-            }
-        }
+        let mut w = self.new_file_writer(mode)?;
+        gen_content_fn(&mut w.writer).and_then(|t| {
+            w.complete(destname)?;
+            Ok(t)
+        })
     }
 
     /// Like `write_file_with()` but explicitly synchronizes the target to disk.
@@ -142,17 +132,11 @@ pub trait OpenatDirExt {
         F: FnOnce(&mut std::io::BufWriter<std::fs::File>) -> Result<T, E>,
         E: From<io::Error>,
     {
-        let mut w = self.new_file_writer(destname, mode)?;
-        match gen_content_fn(&mut w.writer) {
-            Ok(v) => {
-                w.complete_with(|f| f.sync_all())?;
-                Ok(v)
-            }
-            Err(e) => {
-                w.abandon();
-                Err(e)
-            }
-        }
+        let mut w = self.new_file_writer(mode)?;
+        gen_content_fn(&mut w.writer).and_then(|t| {
+            w.complete_with(destname, |f| f.sync_all())?;
+            Ok(t)
+        })
     }
 
     /// Atomically create or replace the destination file with
@@ -193,9 +177,8 @@ impl OpenatDirExt for openat::Dir {
         }
     }
 
-    fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<()> {
-        let _ = impl_remove_file_optional(self, p)?;
-        Ok(())
+    fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<bool> {
+        Ok(impl_remove_file_optional(self, p)?)
     }
 
     fn remove_dir_optional<P: openat::AsPath>(&self, p: P) -> io::Result<bool> {
@@ -309,11 +292,7 @@ impl OpenatDirExt for openat::Dir {
         impl_remove_all(self, p)
     }
 
-    fn new_file_writer<'a, P: AsRef<Path>>(
-        &'a self,
-        destname: P,
-        mode: libc::mode_t,
-    ) -> io::Result<FileWriter> {
+    fn new_file_writer<'a>(&'a self, mode: libc::mode_t) -> io::Result<FileWriter> {
         let (tmpf, name) = if let Some(tmpf) = self.new_unnamed_file(mode).ok() {
             (tmpf, None)
         } else {
@@ -321,8 +300,7 @@ impl OpenatDirExt for openat::Dir {
             let (tmpf, name) = tempfile_in(self, ".tmp", ".tmp", mode)?;
             (tmpf, Some(name))
         };
-        let destname = destname.as_ref();
-        Ok(FileWriter::new(self, tmpf, name, destname.to_path_buf()))
+        Ok(FileWriter::new(self, tmpf, name))
     }
 }
 
@@ -361,17 +339,11 @@ fn impl_copy_regfile<D: openat::AsPath>(
     let d = OsStr::from_bytes(d.as_ref().to_bytes());
     let meta = src.metadata()?;
     // Start in mode 0600, we will replace with the actual bits after writing
-    let mut w = target_dir.new_file_writer(d, 0o600)?;
-    match copy_regfile_inner(src, &meta, &mut w) {
-        Ok(v) => {
-            w.complete()?;
-            Ok(v)
-        }
-        Err(e) => {
-            w.abandon();
-            Err(e)
-        }
-    }
+    let mut w = target_dir.new_file_writer(0o600)?;
+    copy_regfile_inner(src, &meta, &mut w).and_then(|t| {
+        w.complete(d)?;
+        Ok(t)
+    })
 }
 
 fn impl_remove_file_optional<P: openat::AsPath>(d: &openat::Dir, path: P) -> io::Result<bool> {
@@ -442,7 +414,7 @@ pub(crate) fn remove_children(d: &openat::Dir, iter: openat::DirIter) -> io::Res
                 let _ = d.remove_dir_optional(&entry)?;
             }
             _ => {
-                d.remove_file_optional(entry.file_name())?;
+                let _ = d.remove_file_optional(entry.file_name())?;
             }
         }
     }
@@ -479,10 +451,7 @@ fn impl_remove_all<P: openat::AsPath>(d: &openat::Dir, p: P) -> io::Result<bool>
 /// temporary prefix and suffix used for the temporary file before
 /// it is moved over the final destination.
 ///
-/// To ensure that errors are handled correctly, you must explicitly
-/// invoke either `complete()` or `abandon()`.  Letting this value
-/// drop without invoking either of those will panic (unless the
-/// thread is already panicing, in which case this requirement is skipped).
+/// Call `complete()` to `rename()` the file into place.
 pub struct FileWriter<'a> {
     /// Write to the destination file.
     pub writer: std::io::BufWriter<std::fs::File>,
@@ -491,33 +460,20 @@ pub struct FileWriter<'a> {
     /// This string will be used as a suffix for the temporary file
     pub tmp_suffix: String,
 
-    /// The target file name
-    destname: PathBuf,
     /// The target directory
     dir: &'a openat::Dir,
     /// Our temporary file name
     tempname: Option<String>,
-    /// Used to ensure that either complete() or abandon() are invoked
-    bomb: drop_bomb::DropBomb,
 }
 
 impl<'a> FileWriter<'a> {
-    fn new(
-        dir: &'a openat::Dir,
-        f: std::fs::File,
-        tempname: Option<String>,
-        destname: PathBuf,
-    ) -> Self {
+    fn new(dir: &'a openat::Dir, f: std::fs::File, tempname: Option<String>) -> Self {
         Self {
             writer: std::io::BufWriter::new(f),
             tempname,
-            destname,
             tmp_prefix: ".tmp.".to_string(),
             tmp_suffix: ".tmp".to_string(),
             dir,
-            bomb: drop_bomb::DropBomb::new(
-                "FileWriter must be explicitly completed/abandoned to ensure errors are checked",
-            ),
         }
     }
 
@@ -560,11 +516,11 @@ impl<'a> FileWriter<'a> {
     /// renamed into place.  You can use this to change file attributes.
     /// For example, you can change the mode, extended attributes, or invoke
     /// `fchmod()` to change ownership, etc.
-    pub fn complete_with<F>(mut self, f: F) -> io::Result<()>
+    pub fn complete_with<P: AsRef<Path>, F>(self, dest: P, f: F) -> io::Result<()>
     where
         F: Fn(&fs::File) -> io::Result<()>,
     {
-        self.bomb.defuse();
+        let dest = dest.as_ref();
         let dir = self.dir;
         let prefix = self.tmp_prefix;
         let suffix = self.tmp_suffix;
@@ -580,7 +536,7 @@ impl<'a> FileWriter<'a> {
         };
         let tmpname = tmpname.as_str();
         // Then rename it into place.
-        match self.dir.local_rename(tmpname, &self.destname) {
+        match self.dir.local_rename(tmpname, dest) {
             Ok(()) => Ok(()),
             Err(e) => {
                 // If we failed, clean up
@@ -592,19 +548,8 @@ impl<'a> FileWriter<'a> {
 
     /// Flush any outstanding buffered data and rename the temporary
     /// file into place.
-    pub fn complete(self) -> io::Result<()> {
-        self.complete_with(|_f| Ok(()))
-    }
-
-    /// Drop any buffered data and delete the temporary file without
-    /// affecting the final destination.
-    pub fn abandon(mut self) {
-        self.bomb.defuse();
-        if let Some(tmpname) = self.tempname {
-            // We ignore errors here; it was a temporary file anyways.
-            let _ = self.dir.remove_file_optional(tmpname);
-        }
-        // Ideally BufWriter would have an `abandon()` too
+    pub fn complete<P: AsRef<Path>>(self, dest: P) -> io::Result<()> {
+        self.complete_with(dest, |_f| Ok(()))
     }
 }
 
@@ -750,7 +695,8 @@ mod tests {
         let d = openat::Dir::open(td.path())?;
         d.write_file("foo", 0o644)?.sync_all()?;
         assert!(d.open_file_optional("foo")?.is_some());
-        d.remove_file_optional("foo")?;
+        let removed = d.remove_file_optional("foo")?;
+        assert!(removed);
         assert!(d.open_file_optional("foo")?.is_none());
         Ok(())
     }
