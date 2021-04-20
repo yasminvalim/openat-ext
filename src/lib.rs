@@ -80,6 +80,15 @@ pub trait OpenatDirExt {
     /// Synchronize to disk the filesystem containing this directory.
     fn syncfs(&self) -> io::Result<()>;
 
+    /// If `oldpath` exists, rename it to `newpath`. Otherwise do nothing.
+    ///
+    /// This returns `true` if the old path has been succesfully renamed, `false` otherwise.
+    fn local_rename_optional<P: AsRef<Path>, R: AsRef<Path>>(
+        &self,
+        oldpath: P,
+        newpath: R,
+    ) -> io::Result<bool>;
+
     /// Copy a regular file.  The semantics here are intended to match `std::fs::copy()`.
     /// If the target exists, it will be overwritten.  The mode bits (permissions) will match, but
     /// owner/group will be derived from the current process.  Extended attributes are not
@@ -305,6 +314,21 @@ impl OpenatDirExt for openat::Dir {
             Ok(())
         } else {
             Err(std::io::Error::last_os_error())
+        }
+    }
+
+    // NOTE(lucab): this isn't strictly an atomic operation, because
+    // unfortunately `renameat` overloads `ENOENT` for multiple error cases.
+    fn local_rename_optional<P: AsRef<Path>, R: AsRef<Path>>(
+        &self,
+        oldpath: P,
+        newpath: R,
+    ) -> io::Result<bool> {
+        if self.exists(oldpath.as_ref())? {
+            self.local_rename(oldpath.as_ref(), newpath.as_ref())
+                .and(Ok(true))
+        } else {
+            Ok(false)
         }
     }
 
@@ -755,6 +779,37 @@ mod tests {
         d.ensure_dir_all("bar", 0o700)?;
         assert_eq!(d.metadata("bar")?.stat().st_mode & !libc::S_IFMT, 0o700);
         Ok(())
+    }
+
+    #[test]
+    fn test_local_rename() {
+        let td = tempfile::tempdir().unwrap();
+        let d = openat::Dir::open(td.path()).unwrap();
+
+        {
+            d.ensure_dir_all("src/foo", 0o755).unwrap();
+            let renamed = d.local_rename_optional("src", "dst").unwrap();
+            assert_eq!(renamed, true);
+            assert_eq!(d.exists("src").unwrap(), false);
+            assert_eq!(d.exists("dst/foo").unwrap(), true);
+            let noent = d.local_rename_optional("src", "dst").unwrap();
+            assert_eq!(noent, false);
+            assert_eq!(d.remove_all("dst").unwrap(), true);
+        }
+        {
+            let noent = d.local_rename_optional("missing", "dst").unwrap();
+            assert_eq!(noent, false);
+        }
+        {
+            d.ensure_dir_all("src/foo", 0o755).unwrap();
+            let renamed = d.local_rename_optional("src", "dst").unwrap();
+            assert_eq!(renamed, true);
+            assert_eq!(d.exists("dst/foo").unwrap(), true);
+            d.ensure_dir_all("src", 0o755).unwrap();
+            let _ = d.local_rename_optional("src", "dst").unwrap_err();
+            assert_eq!(d.exists("dst/foo").unwrap(), true);
+            assert_eq!(d.remove_all("dst").unwrap(), true);
+        }
     }
 
     fn find_test_file(tempdir: &Path) -> Result<PathBuf> {
