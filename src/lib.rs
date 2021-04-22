@@ -362,7 +362,7 @@ fn impl_remove_file_optional<P: openat::AsPath>(d: &openat::Dir, path: P) -> io:
 pub(crate) fn random_name(rng: &mut rand::rngs::ThreadRng, prefix: &str, suffix: &str) -> String {
     let mut tmpname = prefix.to_string();
     for _ in 0..8 {
-        tmpname.push(rng.sample(rand::distributions::Alphanumeric));
+        tmpname.push(rng.sample(rand::distributions::Alphanumeric).into());
     }
     tmpname.push_str(suffix);
     tmpname
