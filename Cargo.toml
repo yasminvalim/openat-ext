@@ -17,7 +17,7 @@ documentation = "http://docs.rs/openat-ext"
 openat = "0.1.15"
 libc = "0.2.34"
 nix = ">= 0.18, < 0.21"
-rand = "0.7.3"
+rand = "0.8.3"
 
 [dev-dependencies]
 anyhow = "1.0.33"
