@@ -14,8 +14,7 @@
 
 #![deny(unused_results)]
 #![deny(missing_docs)]
-// We're just a wrapper around openat, shouldn't have any unsafe here.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 const TEMPFILE_ATTEMPTS: u32 = 100;
 
@@ -77,6 +76,9 @@ pub trait OpenatDirExt {
 
     /// Remove all content at the target path, returns `true` if something existed there.
     fn remove_all<P: openat::AsPath>(&self, p: P) -> io::Result<bool>;
+
+    /// Synchronize to disk the filesystem containing this directory.
+    fn syncfs(&self) -> io::Result<()>;
 
     /// Copy a regular file.  The semantics here are intended to match `std::fs::copy()`.
     /// If the target exists, it will be overwritten.  The mode bits (permissions) will match, but
@@ -290,6 +292,20 @@ impl OpenatDirExt for openat::Dir {
 
     fn remove_all<P: openat::AsPath>(&self, p: P) -> io::Result<bool> {
         impl_remove_all(self, p)
+    }
+
+    #[allow(unsafe_code)]
+    fn syncfs(&self) -> io::Result<()> {
+        // syncfs(2) does not work with `O_PATH` FDs, so `self` cannot
+        // be directly used. Thus we have to materialize a FD for the
+        // directory first.
+        let dirfd = self.open_file(".")?;
+        let ret = unsafe { libc::syncfs(dirfd.as_raw_fd()) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
     }
 
     fn new_file_writer<'a>(&'a self, mode: libc::mode_t) -> io::Result<FileWriter> {
@@ -751,6 +767,15 @@ mod tests {
         let fallback = tempdir.join("testfile-fallback");
         std::fs::write(&fallback, "some test data")?;
         Ok(fallback)
+    }
+
+    #[test]
+    fn test_syncfs() {
+        let td = tempfile::tempdir().unwrap();
+        let d = openat::Dir::open(td.path()).unwrap();
+        d.ensure_dir_all("foo/bar", 0o755).unwrap();
+        d.syncfs().unwrap();
+        assert_eq!(d.exists("foo/bar").unwrap(), true);
     }
 
     #[test]
