@@ -32,6 +32,26 @@ use std::os::unix::prelude::FileExt as UnixFileExt;
 use std::path::Path;
 use std::{fs, io};
 
+/// Private helper to retry interruptible syscalls.
+macro_rules! retry_eintr {
+    ($inner:expr) => {
+        loop {
+            let err = match $inner {
+                Err(e) => e,
+                val => break val,
+            };
+
+            if let Some(errno) = err.raw_os_error() {
+                if errno == libc::EINTR {
+                    continue;
+                }
+            }
+
+            break Err(err);
+        }
+    };
+}
+
 /// Helper functions for openat::Dir
 pub trait OpenatDirExt {
     /// Checking for nonexistent files (`ENOENT`) is by far the most common case of inspecting error
@@ -88,6 +108,12 @@ pub trait OpenatDirExt {
         oldpath: P,
         newpath: R,
     ) -> io::Result<bool>;
+
+    /// Update timestamps (both access and modification) to the current time.
+    ///
+    /// If the entry at `path` is a symlink, its direct timestamps are updated without
+    /// following the link.
+    fn update_timestamps<P: openat::AsPath>(&self, path: P) -> io::Result<()>;
 
     /// Copy a regular file.  The semantics here are intended to match `std::fs::copy()`.
     /// If the target exists, it will be overwritten.  The mode bits (permissions) will match, but
@@ -330,6 +356,27 @@ impl OpenatDirExt for openat::Dir {
         } else {
             Ok(false)
         }
+    }
+
+    fn update_timestamps<P: openat::AsPath>(&self, p: P) -> io::Result<()> {
+        use nix::sys::stat::{utimensat, UtimensatFlags};
+        use nix::sys::time::TimeSpec;
+
+        let path = p
+            .to_path()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "null byte in path"))?;
+        let now = TimeSpec::from(libc::timespec {
+            tv_nsec: libc::UTIME_NOW,
+            tv_sec: 0,
+        });
+        retry_eintr!(utimensat(
+            Some(self.as_raw_fd()),
+            path.as_ref(),
+            &now,
+            &now,
+            UtimensatFlags::NoFollowSymlink,
+        )
+        .map_err(map_nix_error))
     }
 
     fn new_file_writer<'a>(&'a self, mode: libc::mode_t) -> io::Result<FileWriter> {
@@ -810,6 +857,28 @@ mod tests {
             assert_eq!(d.exists("dst/foo").unwrap(), true);
             assert_eq!(d.remove_all("dst").unwrap(), true);
         }
+    }
+
+    #[test]
+    fn test_update_timestamps() {
+        let td = tempfile::tempdir().unwrap();
+        let d = openat::Dir::open(td.path()).unwrap();
+        d.ensure_dir("foo", 0o755).unwrap();
+        d.syncfs().unwrap();
+        let before = d.metadata("foo").unwrap();
+
+        d.update_timestamps("foo").unwrap();
+        d.syncfs().unwrap();
+        let after = d.metadata("foo").unwrap();
+
+        assert!(
+            before.stat().st_atime != after.stat().st_atime
+                || before.stat().st_atime_nsec != after.stat().st_atime_nsec
+        );
+        assert!(
+            before.stat().st_mtime != after.stat().st_mtime
+                || before.stat().st_mtime_nsec != after.stat().st_mtime_nsec
+        );
     }
 
     fn find_test_file(tempdir: &Path) -> Result<PathBuf> {
