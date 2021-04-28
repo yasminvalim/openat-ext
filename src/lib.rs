@@ -116,6 +116,8 @@ pub trait OpenatDirExt {
     fn update_timestamps<P: openat::AsPath>(&self, path: P) -> io::Result<()>;
 
     /// Update permissions for the given path (see `fchmodat(2)`).
+    ///
+    /// If the entry at `path` is a symlink, no action is performed.
     fn set_mode<P: openat::AsPath>(&self, path: P, mode: libc::mode_t) -> io::Result<()>;
 
     /// Copy a regular file.  The semantics here are intended to match `std::fs::copy()`.
@@ -384,14 +386,23 @@ impl OpenatDirExt for openat::Dir {
 
     fn set_mode<P: openat::AsPath>(&self, p: P, mode: libc::mode_t) -> io::Result<()> {
         use nix::sys::stat::{fchmodat, FchmodatFlags, Mode};
+        use openat::SimpleType;
 
         let path = p
             .to_path()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "null byte in path"))?;
-        let perms = Mode::from_bits_truncate(mode);
 
-        // NOTE(lucab): `AT_SYMLINK_NOFOLLOW` exists but it is not really implemented
-        // and short-circuits to `ENOTSUP`.
+        {
+            // NOTE(lucab): `AT_SYMLINK_NOFOLLOW` used to short-circuit to `ENOTSUP`
+            // in older glibc versions, so we don't use it. Instead we try to detect
+            // any symlink, and skip it.
+            let entry_meta = self.metadata(path.as_ref())?;
+            if entry_meta.simple_type() == SimpleType::Symlink {
+                return Ok(());
+            };
+        }
+
+        let perms = Mode::from_bits_truncate(mode);
         fchmodat(
             Some(self.as_raw_fd()),
             path.as_ref(),
@@ -930,6 +941,18 @@ mod tests {
         assert_eq!(
             d.metadata("foo").unwrap().stat().st_mode & !libc::S_IFMT,
             0o700
+        );
+
+        d.symlink("bar", "foo").unwrap();
+        d.set_mode("bar", 0o000).unwrap();
+        d.syncfs().unwrap();
+        assert_ne!(
+            d.metadata("bar").unwrap().stat().st_mode & !libc::S_IFMT,
+            0o000
+        );
+        assert_ne!(
+            d.metadata("foo").unwrap().stat().st_mode & !libc::S_IFMT,
+            0o000
         );
     }
 
