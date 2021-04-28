@@ -931,13 +931,11 @@ mod tests {
         let d = openat::Dir::open(td.path()).unwrap();
         d.ensure_dir("foo", 0o777).unwrap();
         d.set_mode("foo", 0o750).unwrap();
-        d.syncfs().unwrap();
         assert_eq!(
             d.metadata("foo").unwrap().stat().st_mode & !libc::S_IFMT,
             0o750
         );
         d.set_mode("foo", 0o700).unwrap();
-        d.syncfs().unwrap();
         assert_eq!(
             d.metadata("foo").unwrap().stat().st_mode & !libc::S_IFMT,
             0o700
@@ -945,7 +943,6 @@ mod tests {
 
         d.symlink("bar", "foo").unwrap();
         d.set_mode("bar", 0o000).unwrap();
-        d.syncfs().unwrap();
         assert_ne!(
             d.metadata("bar").unwrap().stat().st_mode & !libc::S_IFMT,
             0o000
