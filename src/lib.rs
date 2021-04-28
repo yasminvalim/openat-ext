@@ -115,6 +115,11 @@ pub trait OpenatDirExt {
     /// following the link.
     fn update_timestamps<P: openat::AsPath>(&self, path: P) -> io::Result<()>;
 
+    /// Update permissions for the given path (see `fchmodat(2)`).
+    ///
+    /// If the entry at `path` is a symlink, no action is performed.
+    fn set_mode<P: openat::AsPath>(&self, path: P, mode: libc::mode_t) -> io::Result<()>;
+
     /// Copy a regular file.  The semantics here are intended to match `std::fs::copy()`.
     /// If the target exists, it will be overwritten.  The mode bits (permissions) will match, but
     /// owner/group will be derived from the current process.  Extended attributes are not
@@ -377,6 +382,36 @@ impl OpenatDirExt for openat::Dir {
             UtimensatFlags::NoFollowSymlink,
         )
         .map_err(map_nix_error))
+    }
+
+    fn set_mode<P: openat::AsPath>(&self, p: P, mode: libc::mode_t) -> io::Result<()> {
+        use nix::sys::stat::{fchmodat, FchmodatFlags, Mode};
+        use openat::SimpleType;
+
+        let path = p
+            .to_path()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "null byte in path"))?;
+
+        {
+            // NOTE(lucab): `AT_SYMLINK_NOFOLLOW` used to short-circuit to `ENOTSUP`
+            // in older glibc versions, so we don't use it. Instead we try to detect
+            // any symlink, and skip it.
+            let entry_meta = self.metadata(path.as_ref())?;
+            if entry_meta.simple_type() == SimpleType::Symlink {
+                return Ok(());
+            };
+        }
+
+        let perms = Mode::from_bits_truncate(mode);
+        fchmodat(
+            Some(self.as_raw_fd()),
+            path.as_ref(),
+            perms,
+            FchmodatFlags::FollowSymlink,
+        )
+        .map_err(map_nix_error)?;
+
+        Ok(())
     }
 
     fn new_file_writer<'a>(&'a self, mode: libc::mode_t) -> io::Result<FileWriter> {
@@ -860,6 +895,15 @@ mod tests {
     }
 
     #[test]
+    fn test_syncfs() {
+        let td = tempfile::tempdir().unwrap();
+        let d = openat::Dir::open(td.path()).unwrap();
+        d.ensure_dir_all("foo/bar", 0o755).unwrap();
+        d.syncfs().unwrap();
+        assert_eq!(d.exists("foo/bar").unwrap(), true);
+    }
+
+    #[test]
     fn test_update_timestamps() {
         let td = tempfile::tempdir().unwrap();
         let d = openat::Dir::open(td.path()).unwrap();
@@ -881,6 +925,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_fchmodat() {
+        let td = tempfile::tempdir().unwrap();
+        let d = openat::Dir::open(td.path()).unwrap();
+        d.ensure_dir("foo", 0o777).unwrap();
+        d.set_mode("foo", 0o750).unwrap();
+        assert_eq!(
+            d.metadata("foo").unwrap().stat().st_mode & !libc::S_IFMT,
+            0o750
+        );
+        d.set_mode("foo", 0o700).unwrap();
+        assert_eq!(
+            d.metadata("foo").unwrap().stat().st_mode & !libc::S_IFMT,
+            0o700
+        );
+
+        d.symlink("bar", "foo").unwrap();
+        d.set_mode("bar", 0o000).unwrap();
+        assert_ne!(
+            d.metadata("bar").unwrap().stat().st_mode & !libc::S_IFMT,
+            0o000
+        );
+        assert_ne!(
+            d.metadata("foo").unwrap().stat().st_mode & !libc::S_IFMT,
+            0o000
+        );
+    }
+
     fn find_test_file(tempdir: &Path) -> Result<PathBuf> {
         for p in ["/proc/self/exe", "/usr/bin/bash"].iter() {
             let p = Path::new(p);
@@ -891,15 +963,6 @@ mod tests {
         let fallback = tempdir.join("testfile-fallback");
         std::fs::write(&fallback, "some test data")?;
         Ok(fallback)
-    }
-
-    #[test]
-    fn test_syncfs() {
-        let td = tempfile::tempdir().unwrap();
-        let d = openat::Dir::open(td.path()).unwrap();
-        d.ensure_dir_all("foo/bar", 0o755).unwrap();
-        d.syncfs().unwrap();
-        assert_eq!(d.exists("foo/bar").unwrap(), true);
     }
 
     #[test]
