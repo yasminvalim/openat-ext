@@ -908,21 +908,16 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let d = openat::Dir::open(td.path()).unwrap();
         d.ensure_dir("foo", 0o755).unwrap();
-        d.syncfs().unwrap();
         let before = d.metadata("foo").unwrap();
+        // File timestamps can not be updated faster than kernel ticking granularity,
+        // so this artificially sleeps through several timer interrupts.
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
         d.update_timestamps("foo").unwrap();
-        d.syncfs().unwrap();
         let after = d.metadata("foo").unwrap();
-
-        assert!(
-            before.stat().st_atime != after.stat().st_atime
-                || before.stat().st_atime_nsec != after.stat().st_atime_nsec
-        );
-        assert!(
-            before.stat().st_mtime != after.stat().st_mtime
-                || before.stat().st_mtime_nsec != after.stat().st_mtime_nsec
-        );
+        if before.stat().st_mtime == after.stat().st_mtime {
+            assert_ne!(before.stat().st_mtime_nsec, after.stat().st_mtime_nsec);
+        }
     }
 
     #[test]
