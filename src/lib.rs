@@ -696,6 +696,9 @@ pub trait FileExt {
     /// Copy the entire contents of `self` to `to`.  This uses operating system
     /// specific fast paths if available.
     fn copy_to(&self, to: &File) -> io::Result<u64>;
+
+    /// Update timestamps (both access and modification) to the current time.
+    fn update_timestamps(&self) -> io::Result<()>;
 }
 
 impl FileExt for File {
@@ -764,6 +767,16 @@ impl FileExt for File {
         }
         Ok(written)
     }
+
+    fn update_timestamps(&self) -> io::Result<()> {
+        use nix::sys::{stat::futimens, time::TimeSpec};
+
+        let now = TimeSpec::from(libc::timespec {
+            tv_nsec: libc::UTIME_NOW,
+            tv_sec: 0,
+        });
+        retry_eintr!(futimens(self.as_raw_fd(), &now, &now,).map_err(map_nix_error))
+    }
 }
 
 fn to_cstr<P: openat::AsPath>(path: P) -> io::Result<P::Buffer> {
@@ -775,7 +788,8 @@ fn to_cstr<P: openat::AsPath>(path: P) -> io::Result<P::Buffer> {
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
-    use std::{error, result};
+    use std::time::Duration;
+    use std::{error, result, thread};
     use tempfile;
 
     type Result<T> = result::Result<T, Box<dyn error::Error>>;
@@ -905,18 +919,34 @@ mod tests {
 
     #[test]
     fn test_update_timestamps() {
+        // File timestamps can not be updated faster than kernel ticking granularity,
+        // so this test has to artificially sleep through several timer interrupts.
+        const TICKING_PAUSE: Duration = Duration::from_millis(100);
+
         let td = tempfile::tempdir().unwrap();
         let d = openat::Dir::open(td.path()).unwrap();
-        d.ensure_dir("foo", 0o755).unwrap();
-        let before = d.metadata("foo").unwrap();
-        // File timestamps can not be updated faster than kernel ticking granularity,
-        // so this artificially sleeps through several timer interrupts.
-        std::thread::sleep(std::time::Duration::from_millis(100));
 
-        d.update_timestamps("foo").unwrap();
-        let after = d.metadata("foo").unwrap();
-        if before.stat().st_mtime == after.stat().st_mtime {
-            assert_ne!(before.stat().st_mtime_nsec, after.stat().st_mtime_nsec);
+        {
+            d.ensure_dir("foo", 0o755).unwrap();
+            let before = d.metadata("foo").unwrap();
+            thread::sleep(TICKING_PAUSE);
+            d.update_timestamps("foo").unwrap();
+            let after = d.metadata("foo").unwrap();
+            if before.stat().st_mtime == after.stat().st_mtime {
+                assert_ne!(before.stat().st_mtime_nsec, after.stat().st_mtime_nsec);
+            }
+        }
+        {
+            use nix::sys::stat::fstat;
+
+            let bar = d.update_file("bar", 0o644).unwrap();
+            let before = fstat(bar.as_raw_fd()).unwrap();
+            thread::sleep(TICKING_PAUSE);
+            bar.update_timestamps().unwrap();
+            let after = fstat(bar.as_raw_fd()).unwrap();
+            if before.st_mtime == after.st_mtime {
+                assert_ne!(before.st_mtime_nsec, after.st_mtime_nsec);
+            }
         }
     }
 
