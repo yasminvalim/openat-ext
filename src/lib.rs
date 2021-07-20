@@ -699,6 +699,10 @@ pub trait FileExt {
 
     /// Update timestamps (both access and modification) to the current time.
     fn update_timestamps(&self) -> io::Result<()>;
+
+    /// Read the exact number of bytes required to fill `buf` starting from `position`,
+    /// without affecting file offset.
+    fn pread_exact(&self, buf: &mut [u8], position: usize) -> io::Result<()>;
 }
 
 impl FileExt for File {
@@ -776,6 +780,41 @@ impl FileExt for File {
             tv_sec: 0,
         });
         retry_eintr!(futimens(self.as_raw_fd(), &now, &now,).map_err(map_nix_error))
+    }
+
+    fn pread_exact(&self, buf: &mut [u8], start_pos: usize) -> io::Result<()> {
+        use nix::sys::uio::pread;
+
+        if buf.len() == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zero-sized buffer in input",
+            ));
+        }
+
+        let mut total_bytes_read = 0;
+        while total_bytes_read < buf.len() {
+            let remaining_buf = &mut buf[total_bytes_read..];
+            let cur_offset = start_pos.saturating_add(total_bytes_read);
+            let bytes_read =
+                retry_eintr!(
+                    pread(self.as_raw_fd(), remaining_buf, cur_offset as libc::off_t)
+                        .map_err(map_nix_error)
+                )?;
+            total_bytes_read += bytes_read;
+            if bytes_read == 0 {
+                break;
+            }
+        }
+
+        if total_bytes_read < buf.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("pread reached EOF after {} bytes", total_bytes_read),
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -1041,5 +1080,38 @@ mod tests {
         };
         assert_eq!(&srcbuf, b"test content");
         assert_eq!(&srcbuf, &destbuf);
+    }
+
+    #[test]
+    fn test_pread_exact() {
+        let td = tempfile::tempdir().unwrap();
+        let d = openat::Dir::open(td.path()).unwrap();
+        static TESTINPUT: &str = "test1 test2 test3";
+        d.write_file_contents("foo", 0o700, TESTINPUT).unwrap();
+        let mut testfile = d.open_file("foo").unwrap();
+        {
+            let mut buf = [0; 0];
+            let _ = testfile.pread_exact(&mut buf, 0).unwrap_err();
+        }
+        {
+            let mut buf = [0; 18];
+            let _ = testfile.pread_exact(&mut buf, 0).unwrap_err();
+        }
+        {
+            let mut buf = [0; 1];
+            let _ = testfile.pread_exact(&mut buf, 2000).unwrap_err();
+        }
+        {
+            let mut buf1 = [0; 5];
+            let mut buf2 = [0; 5];
+            let _ = testfile.pread_exact(&mut buf1, 6).unwrap();
+            let _ = testfile.pread_exact(&mut buf2, 6).unwrap();
+            assert_eq!(buf1, "test2".as_bytes());
+            assert_eq!(buf1, buf2);
+
+            let mut str_buf = String::new();
+            let _ = testfile.read_to_string(&mut str_buf).unwrap();
+            assert_eq!(str_buf, TESTINPUT);
+        }
     }
 }
