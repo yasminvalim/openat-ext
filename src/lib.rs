@@ -18,9 +18,6 @@
 
 const TEMPFILE_ATTEMPTS: u32 = 100;
 
-use libc;
-use nix;
-use openat;
 use rand::Rng;
 use std::ffi::OsStr;
 use std::fs::File;
@@ -140,7 +137,7 @@ pub trait OpenatDirExt {
 
     /// Create a `FileWriter` which provides a `std::io::BufWriter` and then atomically creates
     /// the file at the destination, renaming it over an existing one if necessary.
-    fn new_file_writer<'a>(&'a self, mode: libc::mode_t) -> io::Result<FileWriter>;
+    fn new_file_writer(&self, mode: libc::mode_t) -> io::Result<FileWriter>;
 
     /// Atomically create or replace the destination file, calling the provided
     /// function to generate the contents.  Note that the contents of the
@@ -220,7 +217,7 @@ impl OpenatDirExt for openat::Dir {
     }
 
     fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<bool> {
-        Ok(impl_remove_file_optional(self, p)?)
+        impl_remove_file_optional(self, p)
     }
 
     fn remove_dir_optional<P: openat::AsPath>(&self, p: P) -> io::Result<bool> {
@@ -414,8 +411,8 @@ impl OpenatDirExt for openat::Dir {
         Ok(())
     }
 
-    fn new_file_writer<'a>(&'a self, mode: libc::mode_t) -> io::Result<FileWriter> {
-        let (tmpf, name) = if let Some(tmpf) = self.new_unnamed_file(mode).ok() {
+    fn new_file_writer(&self, mode: libc::mode_t) -> io::Result<FileWriter> {
+        let (tmpf, name) = if let Ok(tmpf) = self.new_unnamed_file(mode) {
             (tmpf, None)
         } else {
             // FIXME allow this to be configurable
@@ -433,10 +430,7 @@ fn impl_read_to_string(mut f: File) -> io::Result<String> {
 }
 
 fn map_nix_error(e: nix::Error) -> io::Error {
-    match e.as_errno() {
-        Some(os_err) => io::Error::from_raw_os_error(os_err as i32),
-        _ => io::Error::new(io::ErrorKind::Other, e),
-    }
+    io::Error::from_raw_os_error(e as i32)
 }
 
 fn copy_regfile_inner(
@@ -501,7 +495,7 @@ pub(crate) fn tempfile_in(
         match d.new_file(tmpname.as_str(), mode) {
             Ok(f) => return Ok((f, tmpname)),
             Err(ref e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => Err(e)?,
+            Err(e) => return Err(e),
         }
     }
     Err(io::Error::new(
@@ -518,7 +512,7 @@ pub(crate) fn tempfile_in(
 /// optimal case where all components exist above.
 pub(crate) fn impl_ensure_dir_all(d: &openat::Dir, p: &Path, mode: libc::mode_t) -> io::Result<()> {
     if let Some(parent) = p.parent() {
-        if parent.as_os_str().len() > 0 {
+        if !parent.as_os_str().is_empty() {
             impl_ensure_dir_all(d, parent, mode)?;
         }
     }
@@ -734,8 +728,8 @@ impl FileExt for File {
                 let copy_result =
                     copy_file_range(self.as_raw_fd(), None, to.as_raw_fd(), None, bytes_to_copy);
                 if let Err(ref copy_err) = copy_result {
-                    match copy_err.as_errno() {
-                        Some(Errno::ENOSYS) | Some(Errno::EPERM) => {
+                    match copy_err {
+                        Errno::ENOSYS | Errno::EPERM => {
                             HAS_COPY_FILE_RANGE.store(false, Ordering::Relaxed);
                         }
                         _ => {}
@@ -743,13 +737,13 @@ impl FileExt for File {
                 }
                 copy_result
             } else {
-                Err(nix::Error::from_errno(Errno::ENOSYS))
+                Err(Errno::ENOSYS)
             };
             match copy_result {
                 Ok(ret) => written += ret as u64,
                 Err(err) => {
-                    match err.as_errno() {
-                        Some(os_err)
+                    match err {
+                        os_err
                             if os_err == Errno::ENOSYS
                                 || os_err == Errno::EXDEV
                                 || os_err == Errno::EINVAL
@@ -763,8 +757,7 @@ impl FileExt for File {
                             assert_eq!(written, 0);
                             return fallback_file_copy(self, to);
                         }
-                        Some(os_err) => return Err(io::Error::from_raw_os_error(os_err as i32)),
-                        _ => return Err(io::Error::new(io::ErrorKind::Other, err)),
+                        os_err => return Err(map_nix_error(os_err)),
                     }
                 }
             }
@@ -785,7 +778,7 @@ impl FileExt for File {
     fn pread_exact(&self, buf: &mut [u8], start_pos: usize) -> io::Result<()> {
         use nix::sys::uio::pread;
 
-        if buf.len() == 0 {
+        if buf.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "zero-sized buffer in input",
