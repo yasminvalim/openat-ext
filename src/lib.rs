@@ -433,10 +433,7 @@ fn impl_read_to_string(mut f: File) -> io::Result<String> {
 }
 
 fn map_nix_error(e: nix::Error) -> io::Error {
-    match e.as_errno() {
-        Some(os_err) => io::Error::from_raw_os_error(os_err as i32),
-        _ => io::Error::new(io::ErrorKind::Other, e),
-    }
+    io::Error::from_raw_os_error(e as i32)
 }
 
 fn copy_regfile_inner(
@@ -734,8 +731,8 @@ impl FileExt for File {
                 let copy_result =
                     copy_file_range(self.as_raw_fd(), None, to.as_raw_fd(), None, bytes_to_copy);
                 if let Err(ref copy_err) = copy_result {
-                    match copy_err.as_errno() {
-                        Some(Errno::ENOSYS) | Some(Errno::EPERM) => {
+                    match copy_err {
+                        Errno::ENOSYS | Errno::EPERM => {
                             HAS_COPY_FILE_RANGE.store(false, Ordering::Relaxed);
                         }
                         _ => {}
@@ -743,13 +740,13 @@ impl FileExt for File {
                 }
                 copy_result
             } else {
-                Err(nix::Error::from_errno(Errno::ENOSYS))
+                Err(Errno::ENOSYS)
             };
             match copy_result {
                 Ok(ret) => written += ret as u64,
                 Err(err) => {
-                    match err.as_errno() {
-                        Some(os_err)
+                    match err {
+                        os_err
                             if os_err == Errno::ENOSYS
                                 || os_err == Errno::EXDEV
                                 || os_err == Errno::EINVAL
@@ -763,8 +760,7 @@ impl FileExt for File {
                             assert_eq!(written, 0);
                             return fallback_file_copy(self, to);
                         }
-                        Some(os_err) => return Err(io::Error::from_raw_os_error(os_err as i32)),
-                        _ => return Err(io::Error::new(io::ErrorKind::Other, err)),
+                        os_err => return Err(map_nix_error(os_err)),
                     }
                 }
             }
