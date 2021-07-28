@@ -18,9 +18,6 @@
 
 const TEMPFILE_ATTEMPTS: u32 = 100;
 
-use libc;
-use nix;
-use openat;
 use rand::Rng;
 use std::ffi::OsStr;
 use std::fs::File;
@@ -140,7 +137,7 @@ pub trait OpenatDirExt {
 
     /// Create a `FileWriter` which provides a `std::io::BufWriter` and then atomically creates
     /// the file at the destination, renaming it over an existing one if necessary.
-    fn new_file_writer<'a>(&'a self, mode: libc::mode_t) -> io::Result<FileWriter>;
+    fn new_file_writer(&self, mode: libc::mode_t) -> io::Result<FileWriter>;
 
     /// Atomically create or replace the destination file, calling the provided
     /// function to generate the contents.  Note that the contents of the
@@ -220,7 +217,7 @@ impl OpenatDirExt for openat::Dir {
     }
 
     fn remove_file_optional<P: openat::AsPath>(&self, p: P) -> io::Result<bool> {
-        Ok(impl_remove_file_optional(self, p)?)
+        impl_remove_file_optional(self, p)
     }
 
     fn remove_dir_optional<P: openat::AsPath>(&self, p: P) -> io::Result<bool> {
@@ -414,8 +411,8 @@ impl OpenatDirExt for openat::Dir {
         Ok(())
     }
 
-    fn new_file_writer<'a>(&'a self, mode: libc::mode_t) -> io::Result<FileWriter> {
-        let (tmpf, name) = if let Some(tmpf) = self.new_unnamed_file(mode).ok() {
+    fn new_file_writer(&self, mode: libc::mode_t) -> io::Result<FileWriter> {
+        let (tmpf, name) = if let Ok(tmpf) = self.new_unnamed_file(mode) {
             (tmpf, None)
         } else {
             // FIXME allow this to be configurable
@@ -498,7 +495,7 @@ pub(crate) fn tempfile_in(
         match d.new_file(tmpname.as_str(), mode) {
             Ok(f) => return Ok((f, tmpname)),
             Err(ref e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => Err(e)?,
+            Err(e) => return Err(e),
         }
     }
     Err(io::Error::new(
@@ -515,7 +512,7 @@ pub(crate) fn tempfile_in(
 /// optimal case where all components exist above.
 pub(crate) fn impl_ensure_dir_all(d: &openat::Dir, p: &Path, mode: libc::mode_t) -> io::Result<()> {
     if let Some(parent) = p.parent() {
-        if parent.as_os_str().len() > 0 {
+        if !parent.as_os_str().is_empty() {
             impl_ensure_dir_all(d, parent, mode)?;
         }
     }
@@ -781,7 +778,7 @@ impl FileExt for File {
     fn pread_exact(&self, buf: &mut [u8], start_pos: usize) -> io::Result<()> {
         use nix::sys::uio::pread;
 
-        if buf.len() == 0 {
+        if buf.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "zero-sized buffer in input",
