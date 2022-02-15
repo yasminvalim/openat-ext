@@ -1,5 +1,12 @@
+# This project is deprecated
+
+Still maintained for now, but deprecated.
+Instead, we are focusing on [cap-std](https://docs.rs/cap-std/latest/cap_std/)
+and the successor to this crate is [cap-std-ext](https://docs.rs/cap-std-ext/latest/cap_std_ext/).
+
 Helpers for the openat crate
 ====
+
 
 See https://crates.io/crates/openat
 
