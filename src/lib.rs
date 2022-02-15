@@ -1,3 +1,9 @@
+//! # This crate is deprecated
+//!
+//! This crate is deprecated.  Development has shifted to the
+//! [cap-std](https://docs.rs/cap-std/latest/cap_std/) ecosystem,
+//! and the successor to this crate is [cap-std-ext](https://docs.rs/cap-std-ext/latest/cap_std_ext/).
+//!
 //! # Extension methods for openat::Dir and std::fs::File
 //!
 //! ```
