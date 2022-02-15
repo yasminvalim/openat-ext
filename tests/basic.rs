@@ -51,6 +51,7 @@ fn exists() -> Result<()> {
 }
 
 #[test]
+#[allow(deprecated)]
 fn copy() -> Result<()> {
     let td = tempfile::tempdir()?;
     let src_p = td.path().join("testfile");

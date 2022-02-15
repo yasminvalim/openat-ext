@@ -433,6 +433,7 @@ fn map_nix_error(e: nix::Error) -> io::Error {
     io::Error::from_raw_os_error(e as i32)
 }
 
+#[allow(deprecated)]
 fn copy_regfile_inner(
     src: &File,
     srcmeta: &std::fs::Metadata,
@@ -689,6 +690,8 @@ pub(crate) fn fallback_file_copy(src: &File, dest: &File) -> io::Result<u64> {
 pub trait FileExt {
     /// Copy the entire contents of `self` to `to`.  This uses operating system
     /// specific fast paths if available.
+    ///
+    #[deprecated = "Use std::io::copy instead"]
     fn copy_to(&self, to: &File) -> io::Result<u64>;
 
     /// Update timestamps (both access and modification) to the current time.
