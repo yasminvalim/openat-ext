@@ -655,7 +655,7 @@ impl<'a> FileWriter<'a> {
         let tmpname = if let Some(t) = self.tempname {
             t
         } else {
-            Self::linkat(&dir, fd, &mut rng, prefix.as_str(), suffix.as_str())?
+            Self::linkat(dir, fd, &mut rng, prefix.as_str(), suffix.as_str())?
         };
         let tmpname = tmpname.as_str();
         // Then rename it into place.
