@@ -1,10 +1,8 @@
 use anyhow::Context;
-use openat;
 use openat_ext::*;
 use std::fs::File;
 use std::io::prelude::*;
 use std::{error, result};
-use tempfile;
 
 type Result<T> = result::Result<T, Box<dyn error::Error>>;
 
@@ -110,7 +108,7 @@ fn write_file_with_complex() -> Result<()> {
     })?;
     let actual_contents = std::fs::read_to_string(td.path().join(testname))?;
     assert_eq!(testcontents, actual_contents.as_str());
-    assert_eq!(written, true);
+    assert!(written);
     Ok(())
 }
 
@@ -185,8 +183,8 @@ fn rmrf() -> anyhow::Result<()> {
     assert!(!d.remove_all("nosuchfile").context("removing nosuchfile")?);
     let l = tempdir.path().join("somelink");
     let regf = tempdir.path().join("regfile");
-    fswrite(&regf, "some file contents")?;
-    symlink("regfile", &l)?;
+    fswrite(regf, "some file contents")?;
+    symlink("regfile", l)?;
     assert!(d.remove_all("somelink")?);
     assert!(!d.remove_all("somelink")?);
     assert!(d.exists("regfile")?);
