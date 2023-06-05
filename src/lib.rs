@@ -831,7 +831,6 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
     use std::{error, result, thread};
-    use tempfile;
 
     type Result<T> = result::Result<T, Box<dyn error::Error>>;
 
@@ -926,26 +925,26 @@ mod tests {
         {
             d.ensure_dir_all("src/foo", 0o755).unwrap();
             let renamed = d.local_rename_optional("src", "dst").unwrap();
-            assert_eq!(renamed, true);
-            assert_eq!(d.exists("src").unwrap(), false);
-            assert_eq!(d.exists("dst/foo").unwrap(), true);
+            assert!(renamed);
+            assert!(!d.exists("src").unwrap());
+            assert!(d.exists("dst/foo").unwrap());
             let noent = d.local_rename_optional("src", "dst").unwrap();
-            assert_eq!(noent, false);
-            assert_eq!(d.remove_all("dst").unwrap(), true);
+            assert!(!noent);
+            assert!(d.remove_all("dst").unwrap());
         }
         {
             let noent = d.local_rename_optional("missing", "dst").unwrap();
-            assert_eq!(noent, false);
+            assert!(!noent);
         }
         {
             d.ensure_dir_all("src/foo", 0o755).unwrap();
             let renamed = d.local_rename_optional("src", "dst").unwrap();
-            assert_eq!(renamed, true);
-            assert_eq!(d.exists("dst/foo").unwrap(), true);
+            assert!(renamed);
+            assert!(d.exists("dst/foo").unwrap());
             d.ensure_dir_all("src", 0o755).unwrap();
             let _ = d.local_rename_optional("src", "dst").unwrap_err();
-            assert_eq!(d.exists("dst/foo").unwrap(), true);
-            assert_eq!(d.remove_all("dst").unwrap(), true);
+            assert!(d.exists("dst/foo").unwrap());
+            assert!(d.remove_all("dst").unwrap());
         }
     }
 
@@ -955,7 +954,7 @@ mod tests {
         let d = openat::Dir::open(td.path()).unwrap();
         d.ensure_dir_all("foo/bar", 0o755).unwrap();
         d.syncfs().unwrap();
-        assert_eq!(d.exists("foo/bar").unwrap(), true);
+        assert!(d.exists("foo/bar").unwrap());
     }
 
     #[test]
@@ -1064,9 +1063,9 @@ mod tests {
         let dst_td = tempfile::tempdir().unwrap();
         let dst_dir = openat::Dir::open(dst_td.path()).unwrap();
 
-        assert_eq!(dst_dir.exists("bar").unwrap(), false);
+        assert!(!dst_dir.exists("bar").unwrap());
         src_dir.copy_file_at("foo", &dst_dir, "bar").unwrap();
-        assert_eq!(dst_dir.exists("bar").unwrap(), true);
+        assert!(dst_dir.exists("bar").unwrap());
 
         let srcbuf = {
             let mut src = src_dir.open_file("foo").unwrap();
@@ -1106,8 +1105,8 @@ mod tests {
         {
             let mut buf1 = [0; 5];
             let mut buf2 = [0; 5];
-            let _ = testfile.pread_exact(&mut buf1, 6).unwrap();
-            let _ = testfile.pread_exact(&mut buf2, 6).unwrap();
+            testfile.pread_exact(&mut buf1, 6).unwrap();
+            testfile.pread_exact(&mut buf2, 6).unwrap();
             assert_eq!(buf1, "test2".as_bytes());
             assert_eq!(buf1, buf2);
 
